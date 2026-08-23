@@ -26,10 +26,12 @@ try {
     & $NpmExecutable run typecheck
     if ($LASTEXITCODE -ne 0) { throw "Frontend type checking failed." }
 
+    & $NpmExecutable run test
+    if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed." }
+
     & $NpmExecutable run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed." }
 }
 finally {
     Pop-Location
 }
-

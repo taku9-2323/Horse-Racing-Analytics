@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -35,3 +36,20 @@ def test_user_can_open_the_built_react_application(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "Horse Racing Analytics" in response.text
 
+
+def test_user_can_distinguish_database_failure_from_api_failure(tmp_path: Path) -> None:
+    database_path = tmp_path / "health.sqlite3"
+    app = create_app(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE application_metadata")
+
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "service": "Horse Racing Analytics",
+        "status": "degraded",
+        "api": {"status": "ok"},
+        "database": {"status": "error", "engine": "sqlite"},
+    }

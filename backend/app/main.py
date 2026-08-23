@@ -1,8 +1,9 @@
 from os import environ
 from pathlib import Path
 import sqlite3
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
@@ -10,16 +11,17 @@ from app.database import SqliteDatabase
 
 
 class ComponentHealth(BaseModel):
-    status: str
+    status: Literal["ok"]
 
 
-class DatabaseHealth(ComponentHealth):
-    engine: str
+class DatabaseHealth(BaseModel):
+    status: Literal["ok", "error"]
+    engine: Literal["sqlite"]
 
 
 class HealthResponse(BaseModel):
     service: str
-    status: str
+    status: Literal["ok", "degraded"]
     api: ComponentHealth
     database: DatabaseHealth
 
@@ -42,19 +44,28 @@ def create_app(
     frontend_dist_path: Path | None = None,
 ) -> FastAPI:
     database = SqliteDatabase(database_path or default_database_path())
-    database.initialize()
+    database_initialization_error: Exception | None = None
+    try:
+        database.initialize()
+    except (OSError, sqlite3.Error, RuntimeError) as error:
+        database_initialization_error = error
 
     app = FastAPI(title="Horse Racing Analytics API", version="0.1.0")
 
     @app.get("/api/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
+    def health(response: Response) -> HealthResponse:
         try:
+            if database_initialization_error is not None:
+                raise database_initialization_error
             database.check()
-        except (OSError, sqlite3.Error, RuntimeError) as error:
-            raise HTTPException(
-                status_code=503,
-                detail="SQLite database is not ready",
-            ) from error
+        except (OSError, sqlite3.Error, RuntimeError):
+            response.status_code = 503
+            return HealthResponse(
+                service="Horse Racing Analytics",
+                status="degraded",
+                api=ComponentHealth(status="ok"),
+                database=DatabaseHealth(status="error", engine="sqlite"),
+            )
 
         return HealthResponse(
             service="Horse Racing Analytics",

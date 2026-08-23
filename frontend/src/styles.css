@@ -162,6 +162,11 @@ h2 {
   box-shadow: 0 0 0 6px rgba(101, 201, 132, 0.1), 0 0 20px rgba(101, 201, 132, 0.5);
 }
 
+.status-dot.stopped {
+  background: #dc746b;
+  box-shadow: 0 0 0 6px rgba(220, 116, 107, 0.1), 0 0 20px rgba(220, 116, 107, 0.45);
+}
+
 .status-card p {
   margin-bottom: 0;
   color: #8f9b94;
@@ -225,4 +230,3 @@ footer {
     border-left: 0;
   }
 }
-

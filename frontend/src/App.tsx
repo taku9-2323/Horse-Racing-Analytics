@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 
-type ComponentHealth = {
-  status: "ok";
-};
+type HealthStatus = "ok" | "error";
+
+type ComponentHealth = { status: "ok" };
 
 type HealthResponse = {
   service: string;
-  status: "ok";
+  status: "ok" | "degraded";
   api: ComponentHealth;
-  database: ComponentHealth & { engine: "sqlite" };
+  database: { status: HealthStatus; engine: "sqlite" };
 };
 
 type LoadState =
@@ -16,7 +16,7 @@ type LoadState =
   | { kind: "ready"; health: HealthResponse }
   | { kind: "error"; message: string };
 
-const statusLabel = (status: "ok") => (status === "ok" ? "稼働中" : "停止中");
+const statusLabel = (status: HealthStatus) => (status === "ok" ? "稼働中" : "停止中");
 
 function App() {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
@@ -27,7 +27,7 @@ function App() {
     const loadHealth = async () => {
       try {
         const response = await fetch("/api/health", { signal: controller.signal });
-        if (!response.ok) {
+        if (response.status !== 200 && response.status !== 503) {
           throw new Error(`HTTP ${response.status}`);
         }
         const health = (await response.json()) as HealthResponse;
@@ -77,7 +77,7 @@ function App() {
 
         {loadState.kind === "ready" && (
           <div className="status-grid">
-            <article className="status-card">
+            <article className="status-card" aria-label="APIの状態">
               <div className="status-card-label">API</div>
               <div className="status-value">
                 <span className="status-dot" aria-hidden="true" />
@@ -86,13 +86,20 @@ function App() {
               <p>分析処理を受け付けられます。</p>
             </article>
 
-            <article className="status-card">
+            <article className="status-card" aria-label="データベースの状態">
               <div className="status-card-label">DATABASE</div>
               <div className="status-value">
-                <span className="status-dot" aria-hidden="true" />
+                <span
+                  className={`status-dot ${loadState.health.database.status === "error" ? "stopped" : ""}`}
+                  aria-hidden="true"
+                />
                 {statusLabel(loadState.health.database.status)}
               </div>
-              <p>SQLiteへ接続できています。</p>
+              <p>
+                {loadState.health.database.status === "ok"
+                  ? "SQLiteへ接続できています。"
+                  : "SQLiteへ接続できません。"}
+              </p>
             </article>
           </div>
         )}
@@ -107,4 +114,3 @@ function App() {
 }
 
 export default App;
-
