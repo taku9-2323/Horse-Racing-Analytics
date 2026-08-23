@@ -10,11 +10,10 @@ triage: ready-for-agent
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] FastAPI、React、SQLiteを含むアプリを再現可能な手順で起動できる
-- [ ] APIの稼働確認がHTTP境界のテストを通る
-- [ ] ブラウザ画面にAPIとデータベースの状態が日本語で表示される
-- [ ] サーバーが既定でloopbackだけにバインドされる
-- [ ] バックエンドテスト、フロントエンド型検査、ビルドが成功する
-
+- [x] FastAPI、React、SQLiteを含むアプリを再現可能な手順で起動できる
+- [x] APIの稼働確認がHTTP境界のテストを通る
+- [x] ブラウザ画面にAPIとデータベースの状態が日本語で表示される
+- [x] サーバーが既定でloopbackだけにバインドされる
+- [x] バックエンドテスト、フロントエンド型検査、ビルドが成功する
