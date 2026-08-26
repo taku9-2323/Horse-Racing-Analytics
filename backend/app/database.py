@@ -4,6 +4,10 @@ from collections.abc import Sequence
 from typing import Any
 
 
+class RaceImportConflictError(Exception):
+    pass
+
+
 class SqliteDatabase:
     """Owns the small public surface needed to operate the local database."""
 
@@ -81,8 +85,29 @@ class SqliteDatabase:
         if row != ("2",):
             raise RuntimeError("SQLite schema is not ready")
 
-    def insert_race(self, race: dict[str, Any], runners: Sequence[dict[str, Any]]) -> int:
+    def import_race(self, race: dict[str, Any], runners: Sequence[dict[str, Any]]) -> tuple[int, bool]:
         with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            existing = connection.execute(
+                """
+                SELECT * FROM races
+                WHERE organizer = ? AND country = ? AND racecourse = ?
+                  AND race_date = ? AND race_number = ?
+                """,
+                (
+                    race["organizer"], race["country"], race["racecourse"],
+                    race["race_date"], race["race_number"],
+                ),
+            ).fetchone()
+            if existing is not None:
+                stored_runners = connection.execute(
+                    "SELECT * FROM runners WHERE race_id = ? ORDER BY horse_number",
+                    (existing["id"],),
+                ).fetchall()
+                if self._same_content(existing, stored_runners, race, runners):
+                    return int(existing["id"]), False
+                raise RaceImportConflictError
+
             cursor = connection.execute(
                 """
                 INSERT INTO races (
@@ -122,7 +147,33 @@ class SqliteDatabase:
                     for runner in runners
                 ],
             )
-        return race_id
+        return race_id, True
+
+    @staticmethod
+    def _same_content(
+        stored_race: sqlite3.Row,
+        stored_runners: Sequence[sqlite3.Row],
+        race: dict[str, Any],
+        runners: Sequence[dict[str, Any]],
+    ) -> bool:
+        race_fields = (
+            "organizer", "country", "racecourse", "race_date", "race_number",
+            "start_time", "timezone", "start_utc", "surface", "distance_m", "going",
+        )
+        runner_fields = (
+            "gate", "horse_number", "horse_name", "age", "sex", "assigned_weight",
+            "status", "win_odds", "place_odds_min", "place_odds_max",
+            "raw_inverse_win_odds", "normalized_win_market_share",
+        )
+        incoming_runners = sorted(runners, key=lambda runner: int(runner["horse_number"]))
+        return (
+            all(stored_race[field] == race[field] for field in race_fields)
+            and len(stored_runners) == len(incoming_runners)
+            and all(
+                all(stored[field] == incoming[field] for field in runner_fields)
+                for stored, incoming in zip(stored_runners, incoming_runners, strict=True)
+            )
+        )
 
     def get_race(self, race_id: int) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
         with sqlite3.connect(self._path) as connection:

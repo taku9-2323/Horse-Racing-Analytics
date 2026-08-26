@@ -33,6 +33,9 @@ type RaceAnalysis = {
   candidate_reason: string;
 };
 
+type ImportIssue = { row: number; column: string; code: string; description: string };
+type ImportErrorDetail = { message: string; errors?: ImportIssue[] };
+
 const statusLabel = (status: HealthStatus) => (status === "ok" ? "稼働中" : "停止中");
 
 function App() {
@@ -40,7 +43,7 @@ function App() {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
   const [importState, setImportState] = useState<"idle" | "loading" | "error">("idle");
-  const [importError, setImportError] = useState("");
+  const [importError, setImportError] = useState<ImportErrorDetail | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -76,13 +79,18 @@ function App() {
         body: csvFile,
       });
       if (!response.ok) {
-        const error = (await response.json()) as { detail?: string };
-        throw new Error(error.detail ?? `HTTP ${response.status}`);
+        const payload = (await response.json()) as { detail?: string | ImportErrorDetail };
+        if (payload.detail && typeof payload.detail === "object") {
+          setImportError(payload.detail);
+          setImportState("error");
+          return;
+        }
+        throw new Error(payload.detail ?? `HTTP ${response.status}`);
       }
       setAnalysis((await response.json()) as RaceAnalysis);
       setImportState("idle");
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : "不明なエラー");
+      setImportError({ message: error instanceof Error ? error.message : "不明なエラー" });
       setImportState("error");
     }
   };
@@ -166,7 +174,19 @@ function App() {
           <button type="button" disabled={!csvFile || importState === "loading"} onClick={() => void importCsv()}>
             {importState === "loading" ? "分析中…" : "取り込んで分析"}
           </button>
-          {importState === "error" && <p className="import-error" role="alert">{importError}</p>}
+          {importState === "error" && importError && (
+            <div className="import-error" role="alert">
+              <strong>{importError.message}</strong>
+              {importError.errors && (
+                <ul>{importError.errors.map((error) => (
+                  <li key={`${error.row}-${error.column}-${error.code}`}>
+                    <span>{error.row}行目 / {error.column} / {error.code}</span>
+                    <p>{error.description}</p>
+                  </li>
+                ))}</ul>
+              )}
+            </div>
+          )}
         </div>
 
         {analysis && (

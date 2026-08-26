@@ -117,6 +117,10 @@ h1 {
 .import-form label { color: #c6a766; font-size: 0.82rem; }
 .import-form input { color: #b8c2bc; }
 .import-error { grid-column: 1 / -1; margin: 0; color: #e4aaa1; }
+.import-error ul { margin: 12px 0 0; padding-left: 22px; }
+.import-error li + li { margin-top: 10px; }
+.import-error li span { font-family: Consolas, monospace; font-size: 0.78rem; }
+.import-error li p { margin: 3px 0 0; color: #c99a94; }
 
 .analysis-result { border-top: 1px solid rgba(220, 204, 170, 0.14); }
 .race-heading { display: flex; justify-content: space-between; padding: 28px; }

@@ -86,4 +86,31 @@ describe("race analysis", () => {
     expect(screen.getByText("66.67% / 74.07% / 83.33%")).toBeTruthy();
     expect(screen.getByText("期待値候補なし")).toBeTruthy();
   });
+
+  it("shows every CSV error with its row, column, code, and description", async () => {
+    const errorResponse = new Response(JSON.stringify({ detail: {
+      code: "csv_validation_failed",
+      message: "CSVに修正が必要な箇所があります。",
+      errors: [
+        { row: 2, column: "win_odds", code: "must_be_positive", description: "0より大きい値を指定してください。" },
+        { row: 3, column: "age", code: "invalid_integer", description: "整数で指定してください。" },
+      ],
+    }}), { status: 422, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(errorResponse));
+    render(<App />);
+    await screen.findByRole("article", { name: "APIの状態" });
+
+    fireEvent.change(screen.getByLabelText("CSVファイル"), {
+      target: { files: [new File(["invalid"], "invalid.csv", { type: "text/csv" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("2行目 / win_odds / must_be_positive")).toBeTruthy();
+    expect(within(alert).getByText("3行目 / age / invalid_integer")).toBeTruthy();
+    expect(within(alert).getByText("0より大きい値を指定してください。")).toBeTruthy();
+    expect(within(alert).getByText("整数で指定してください。")).toBeTruthy();
+  });
 });

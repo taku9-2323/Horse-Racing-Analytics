@@ -7,8 +7,8 @@ from fastapi import Body, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
-from app.database import SqliteDatabase
-from app.race_analysis import RaceAnalysis, build_analysis, parse_race_csv
+from app.database import RaceImportConflictError, SqliteDatabase
+from app.race_analysis import CsvValidationError, RaceAnalysis, build_analysis, parse_race_csv
 
 
 class ComponentHealth(BaseModel):
@@ -76,17 +76,22 @@ def create_app(
         )
 
     @app.post("/api/races/import", response_model=RaceAnalysis, status_code=201)
-    def import_race(csv_content: bytes = Body(media_type="text/csv")) -> RaceAnalysis:
+    def import_race(response: Response, csv_content: bytes = Body(media_type="text/csv")) -> RaceAnalysis:
         try:
             race, runners = parse_race_csv(csv_content)
-            race_id = database.insert_race(race, runners)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        except sqlite3.IntegrityError as error:
+            race_id, created = database.import_race(race, runners)
+        except CsvValidationError as error:
+            raise HTTPException(status_code=422, detail=error.detail()) from error
+        except RaceImportConflictError as error:
             raise HTTPException(
                 status_code=409,
-                detail="同じレースまたは馬番がすでに登録されています。",
+                detail={
+                    "code": "race_import_conflict",
+                    "message": "同じレースに異なる内容がすでに登録されています。",
+                },
             ) from error
+        if not created:
+            response.status_code = 200
         stored = database.get_race(race_id)
         if stored is None:
             raise HTTPException(status_code=500, detail="保存したレースを読み込めません。")
