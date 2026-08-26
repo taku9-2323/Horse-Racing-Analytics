@@ -3,11 +3,12 @@ from pathlib import Path
 import sqlite3
 from typing import Literal
 
-from fastapi import FastAPI, Response
+from fastapi import Body, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
 from app.database import SqliteDatabase
+from app.race_analysis import RaceAnalysis, build_analysis, parse_race_csv
 
 
 class ComponentHealth(BaseModel):
@@ -73,6 +74,30 @@ def create_app(
             api=ComponentHealth(status="ok"),
             database=DatabaseHealth(status="ok", engine="sqlite"),
         )
+
+    @app.post("/api/races/import", response_model=RaceAnalysis, status_code=201)
+    def import_race(csv_content: bytes = Body(media_type="text/csv")) -> RaceAnalysis:
+        try:
+            race, runners = parse_race_csv(csv_content)
+            race_id = database.insert_race(race, runners)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(
+                status_code=409,
+                detail="同じレースまたは馬番がすでに登録されています。",
+            ) from error
+        stored = database.get_race(race_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="保存したレースを読み込めません。")
+        return build_analysis(race_id, *stored)
+
+    @app.get("/api/races/{race_id}", response_model=RaceAnalysis)
+    def get_race(race_id: int) -> RaceAnalysis:
+        stored = database.get_race(race_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="レースが見つかりません。")
+        return build_analysis(race_id, *stored)
 
     frontend_dist = frontend_dist_path or default_frontend_dist_path()
     if frontend_dist.is_dir():

@@ -39,6 +39,17 @@ input {
   font: inherit;
 }
 
+button {
+  border: 1px solid #c6a766;
+  border-radius: 4px;
+  padding: 10px 18px;
+  color: #111815;
+  background: #c6a766;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .shell {
   width: min(1040px, calc(100% - 40px));
   margin: 0 auto;
@@ -92,6 +103,34 @@ h1 {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(18px);
 }
+
+.analysis-panel { margin-top: 24px; }
+
+.import-form {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 28px;
+}
+
+.import-form label { color: #c6a766; font-size: 0.82rem; }
+.import-form input { color: #b8c2bc; }
+.import-error { grid-column: 1 / -1; margin: 0; color: #e4aaa1; }
+
+.analysis-result { border-top: 1px solid rgba(220, 204, 170, 0.14); }
+.race-heading { display: flex; justify-content: space-between; padding: 28px; }
+.race-heading h3 { margin: 0 0 8px; font-family: Georgia, "Yu Mincho", serif; font-size: 1.8rem; }
+.race-heading p { margin: 0; color: #8f9b94; }
+.race-heading > strong { color: #c6a766; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+th, td { padding: 14px 18px; border-top: 1px solid rgba(220, 204, 170, 0.11); text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: #8f9b94; font-weight: 500; }
+.candidate-empty { display: flex; gap: 18px; padding: 22px 28px; border-top: 1px solid rgba(220, 204, 170, 0.14); background: rgba(198, 167, 102, 0.06); }
+.candidate-empty strong { color: #c6a766; white-space: nowrap; }
+.candidate-empty span { color: #aeb8b2; }
 
 .panel-heading {
   display: flex;
@@ -219,6 +258,9 @@ footer {
   .status-grid {
     grid-template-columns: 1fr;
   }
+
+  .import-form { grid-template-columns: 1fr; padding: 20px; }
+  .candidate-empty { flex-direction: column; gap: 8px; padding: 20px; }
 
   .status-card {
     min-height: 0;

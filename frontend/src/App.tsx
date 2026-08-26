@@ -16,10 +16,31 @@ type LoadState =
   | { kind: "ready"; health: HealthResponse }
   | { kind: "error"; message: string };
 
+type RaceAnalysis = {
+  race_id: number;
+  race: {
+    organizer: string; country: string; racecourse: string; race_date: string; race_number: number; start_time: string;
+    timezone: string; start_utc: string;
+    surface: string; distance_m: number; going: string; field_size: number;
+  };
+  runners: Array<{
+    horse_number: number; horse_name: string; win_odds: number;
+    raw_inverse_win_odds: number; normalized_win_market_share: number;
+    place_odds_min: number; place_odds_max: number;
+    place_break_even_hit_rate: { minimum: number; midpoint: number; maximum: number } | null;
+  }>;
+  candidate_status: string;
+  candidate_reason: string;
+};
+
 const statusLabel = (status: HealthStatus) => (status === "ok" ? "稼働中" : "停止中");
 
 function App() {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
+  const [importState, setImportState] = useState<"idle" | "loading" | "error">("idle");
+  const [importError, setImportError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -44,6 +65,27 @@ function App() {
     void loadHealth();
     return () => controller.abort();
   }, []);
+
+  const importCsv = async () => {
+    if (!csvFile) return;
+    setImportState("loading");
+    try {
+      const response = await fetch("/api/races/import", {
+        method: "POST",
+        headers: { "Content-Type": "text/csv; charset=utf-8" },
+        body: csvFile,
+      });
+      if (!response.ok) {
+        const error = (await response.json()) as { detail?: string };
+        throw new Error(error.detail ?? `HTTP ${response.status}`);
+      }
+      setAnalysis((await response.json()) as RaceAnalysis);
+      setImportState("idle");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "不明なエラー");
+      setImportState("error");
+    }
+  };
 
   return (
     <main className="shell">
@@ -105,12 +147,73 @@ function App() {
         )}
       </section>
 
+      <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
+        <div className="panel-heading">
+          <div>
+            <span className="section-number">02</span>
+            <h2 id="race-analysis-heading">1レース市場分析</h2>
+          </div>
+          <span className="local-badge">UTF-8 CSV</span>
+        </div>
+        <div className="import-form">
+          <label htmlFor="race-csv">CSVファイル</label>
+          <input
+            id="race-csv"
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => setCsvFile(event.target.files?.[0] ?? null)}
+          />
+          <button type="button" disabled={!csvFile || importState === "loading"} onClick={() => void importCsv()}>
+            {importState === "loading" ? "分析中…" : "取り込んで分析"}
+          </button>
+          {importState === "error" && <p className="import-error" role="alert">{importError}</p>}
+        </div>
+
+        {analysis && (
+          <div className="analysis-result">
+            <div className="race-heading">
+              <div>
+                <h3>{analysis.race.racecourse} {analysis.race.race_number}R</h3>
+                <p>{analysis.race.race_date} {analysis.race.start_time} / {analysis.race.surface}{analysis.race.distance_m}m / {analysis.race.going}</p>
+              </div>
+              <strong>{analysis.race.field_size}頭</strong>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>馬番・馬名</th><th>単勝オッズ</th><th>生逆オッズ</th>
+                  <th>単勝市場投票シェア</th><th>複勝オッズ</th><th>複勝損益分岐的中率（下限 / 代表 / 上限）</th>
+                </tr></thead>
+                <tbody>{analysis.runners.map((runner) => (
+                  <tr key={runner.horse_number}>
+                    <td><b>{runner.horse_number}</b> {runner.horse_name}</td>
+                    <td>{runner.win_odds.toFixed(1)}</td>
+                    <td>{formatPercent(runner.raw_inverse_win_odds)}</td>
+                    <td>{formatPercent(runner.normalized_win_market_share)}</td>
+                    <td>{runner.place_odds_min.toFixed(1)} 〜 {runner.place_odds_max.toFixed(1)}</td>
+                    <td>{runner.place_break_even_hit_rate
+                      ? `${formatPercent(runner.place_break_even_hit_rate.minimum)} / ${formatPercent(runner.place_break_even_hit_rate.midpoint)} / ${formatPercent(runner.place_break_even_hit_rate.maximum)}`
+                      : "対象外（4頭以下）"}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <aside className="candidate-empty">
+              <strong>{analysis.candidate_status}</strong>
+              <span>{analysis.candidate_reason}</span>
+            </aside>
+          </div>
+        )}
+      </section>
+
       <footer>
-        <span>チケット01</span>
-        <span>ローカルアプリを起動する</span>
+        <span>チケット02</span>
+        <span>1レースをCSVから分析する</span>
       </footer>
     </main>
   );
 }
+
+const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 
 export default App;

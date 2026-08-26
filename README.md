@@ -14,7 +14,11 @@ JRAの単勝・複勝を対象に、レース前の市場情報と将来の独�
 
 ## Current status
 
-チケット01「ローカルアプリを起動する」は完了しました。FastAPI、React、SQLiteの稼働状態をブラウザから確認できます。次のfrontierはチケット02「1レースをCSVから分析する」です。
+チケット02「1レースをCSVから分析する」まで完了しました。UTF-8 CSVを取り込み、単勝市場投票シェアと複勝損益分岐的中率をブラウザで確認できます。次のfrontierはチケット03「CSV取込を安全に再実行する」です。
+
+## CSV contract
+
+チケット02の入力例は [`examples/sample-race.csv`](examples/sample-race.csv) です。1ファイルに1レースの全出走馬を記載し、UTF-8で保存します。
 
 ## Prerequisites
 
