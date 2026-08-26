@@ -136,6 +136,26 @@ th { color: #8f9b94; font-weight: 500; }
 .candidate-empty strong { color: #c6a766; white-space: nowrap; }
 .candidate-empty span { color: #aeb8b2; }
 
+.prediction-workflow { padding: 28px; border-top: 1px solid rgba(220, 204, 170, 0.14); }
+.prediction-workflow h4 { margin: 0 0 20px; font-size: 1rem; }
+.prediction-workflow h5 { margin: 22px 0 12px; color: #c6a766; }
+.snapshot-form { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; }
+.snapshot-form label, .correction-form label { color: #aeb8b2; font-size: 0.8rem; }
+.snapshot-form input, .correction-form input { min-width: 0; padding: 9px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
+.odds-editor { display: grid; gap: 8px; margin-bottom: 14px; }
+.odds-editor fieldset { display: grid; grid-template-columns: auto repeat(3, 1fr); align-items: end; gap: 10px; margin: 0; padding: 10px; border: 1px solid rgba(220, 204, 170, 0.14); }
+.odds-editor legend { color: #dcccaa; font-size: 0.8rem; }
+.odds-editor label { display: grid; gap: 4px; color: #aeb8b2; font-size: 0.72rem; }
+.odds-editor input { min-width: 0; padding: 7px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
+.workflow-message { margin: 14px 0 0; color: #a8ceb2; }
+.workflow-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.workflow-card { display: grid; gap: 8px; margin-bottom: 10px; padding: 16px; border: 1px solid rgba(220, 204, 170, 0.14); }
+.workflow-card > span { color: #8f9b94; font-size: 0.78rem; }
+.workflow-card.invalidated { opacity: 0.68; }
+.workflow-card button { justify-self: start; margin-top: 4px; padding: 7px 10px; font-size: 0.76rem; }
+.empty-note { color: #68756e; font-size: 0.82rem; }
+.correction-form { display: grid; gap: 7px; margin-top: 6px; }
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -265,6 +285,7 @@ footer {
 
   .import-form { grid-template-columns: 1fr; padding: 20px; }
   .candidate-empty { flex-direction: column; gap: 8px; padding: 20px; }
+  .snapshot-form, .workflow-columns, .odds-editor fieldset { grid-template-columns: 1fr; }
 
   .status-card {
     min-height: 0;

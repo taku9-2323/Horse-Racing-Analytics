@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import PredictionPanel from "./PredictionPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -222,13 +223,23 @@ function App() {
               <strong>{analysis.candidate_status}</strong>
               <span>{analysis.candidate_reason}</span>
             </aside>
+            <PredictionPanel
+              key={analysis.race_id}
+              raceId={analysis.race_id}
+              runners={analysis.runners.map((runner) => ({
+                horse_number: runner.horse_number,
+                win_odds: runner.win_odds,
+                place_odds_min: runner.place_odds_min,
+                place_odds_max: runner.place_odds_max,
+              }))}
+            />
           </div>
         )}
       </section>
 
       <footer>
-        <span>チケット02</span>
-        <span>1レースをCSVから分析する</span>
+        <span>チケト04</span>
+        <span>複数時点の予測を固定する</span>
       </footer>
     </main>
   );

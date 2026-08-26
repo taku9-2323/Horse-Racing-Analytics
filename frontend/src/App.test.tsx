@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -112,5 +112,76 @@ describe("race analysis", () => {
     expect(within(alert).getByText("3行目 / age / invalid_integer")).toBeTruthy();
     expect(within(alert).getByText("0より大きい値を指定してください。")).toBeTruthy();
     expect(within(alert).getByText("整数で指定してください。")).toBeTruthy();
+  });
+});
+
+describe("prediction freezing", () => {
+  it("loads history, saves edited odds, freezes, and creates a reasoned correction", async () => {
+    const analysis = {
+      race_id: 1,
+      race: { organizer: "JRA", country: "JP", racecourse: "東京", race_date: "2026-08-30", race_number: 11,
+        start_time: "15:40", timezone: "Asia/Tokyo", start_utc: "2026-08-30T06:40:00Z",
+        surface: "芝", distance_m: 2000, going: "良", field_size: 1 },
+      runners: [{ horse_number: 1, horse_name: "アカツキ", win_odds: 2,
+        raw_inverse_win_odds: 0.5, normalized_win_market_share: 1,
+        place_odds_min: 1.2, place_odds_max: 1.5, place_break_even_hit_rate: null }],
+      candidate_status: "期待値候補なし", candidate_reason: "市場基準から候補を生成しません。",
+    };
+    const snapshot = { id: 10, race_id: 1, observed_at: "2026-08-30T04:55:00Z", received_at: "2026-08-30T05:00:00Z",
+      source: "ui", runners: [{ horse_number: 1, win_odds: 2.4, place_odds_min: 1.2, place_odds_max: 1.5 }] };
+    const historicalSnapshot = { ...snapshot, id: 9, observed_at: "2026-08-30T04:45:00Z",
+      runners: [{ horse_number: 1, win_odds: 2, place_odds_min: 1.2, place_odds_max: 1.5 }] };
+    const prediction = { id: 20, race_id: 1, input_snapshot_id: 10, model_identifier: "market-baseline", model_version: "1.0",
+      frozen_at: "2026-08-30T05:01:00Z", status: "active", invalidation_reason: null, replaces_prediction_id: null,
+      official_evaluation_eligible: true, evaluation_exclusion_reason: null,
+      runners: [{ horse_number: 1, raw_inverse_win_odds: 0.5, win_market_share: 1 }] };
+    const invalidated = { ...prediction, status: "invalidated", invalidation_reason: "入力ミス",
+      official_evaluation_eligible: false, evaluation_exclusion_reason: "理由付きで無効化された旧版" };
+    const replacement = { ...prediction, id: 21, replaces_prediction_id: 20,
+      official_evaluation_eligible: false, evaluation_exclusion_reason: "発走後に固定された事後訂正" };
+    const jsonResponse = (value: object, status = 200) => new Response(JSON.stringify(value), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(jsonResponse(analysis, 201))
+      .mockResolvedValueOnce(jsonResponse([historicalSnapshot]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse(snapshot, 201))
+      .mockResolvedValueOnce(jsonResponse(prediction, 201))
+      .mockResolvedValueOnce(jsonResponse(replacement, 201))
+      .mockResolvedValueOnce(jsonResponse([historicalSnapshot, snapshot]))
+      .mockResolvedValueOnce(jsonResponse([invalidated, replacement]));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByRole("article", { name: "APIの状態" });
+    fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
+    await screen.findByRole("heading", { name: "東京 11R" });
+    expect(await screen.findByText("時点 #9 / 観測 2026-08-30T04:45:00Z")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("1番 単勝オッズ"), { target: { value: "2.4" } });
+    fireEvent.change(screen.getByLabelText("オッズ観測時刻"), { target: { value: "2026-08-30T13:55" } });
+    fireEvent.click(screen.getByRole("button", { name: "オッズ時点を保存" }));
+    expect(await screen.findByText("時点 #10 / 観測 2026-08-30T04:55:00Z")).toBeTruthy();
+    expect(screen.getByText("1番 単勝2.4 / 複勝1.2–1.5")).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    const snapshotRequest = fetchMock.mock.calls[4][1] as RequestInit;
+    const snapshotBody = JSON.parse(String(snapshotRequest.body)) as { runners: Array<{ win_odds: number }> };
+    expect(snapshotBody.runners[0].win_odds).toBe(2.4);
+    fireEvent.click(screen.getAllByRole("button", { name: "この時点の予測を固定" }).at(-1)!);
+
+    expect(await screen.findByText("固定済み / 市場基準 1.0")).toBeTruthy();
+    expect(screen.getByText("公式評価対象")).toBeTruthy();
+    expect(screen.getByText(/入力時点 #10/)).toBeTruthy();
+    expect(screen.getByText("1番 100.00%")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("訂正理由"), { target: { value: "入力ミス" } });
+    fireEvent.click(screen.getByRole("button", { name: "最新時点で訂正版を作成" }));
+
+    expect(await screen.findByText("無効化済み / 市場基準 1.0")).toBeTruthy();
+    expect(screen.getByText("理由: 入力ミス")).toBeTruthy();
+    expect(screen.getAllByText("固定済み / 市場基準 1.0")).toHaveLength(1);
+    expect(screen.getByText("発走後に固定された事後訂正")).toBeTruthy();
   });
 });

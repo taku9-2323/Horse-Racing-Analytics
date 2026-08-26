@@ -9,12 +9,13 @@ JRAの単勝・複勝を対象に、レース前の市場情報と将来の独�
 - [開発計画](DEVELOPMENT_PLAN.md)
 - [製品境界と用語](CONTEXT.md)
 - [実装仕様](.scratch/horse-racing-analytics/spec.md)
+- [UI改善計画](.scratch/horse-racing-analytics/ui-improvement-plan.md)
 - [初期予測ルールの文献調査](docs/research/initial-prediction-rules.md)
 - [複勝オッズに関するADR](docs/adr/0001-place-odds-are-not-probabilities.md)
 
 ## Current status
 
-チケット03「CSV取込を安全に再実行する」まで完了しました。CSVの全エラーをまとめて確認でき、同一内容は安全に再取込し、異なる内容は競合として拒否します。次のfrontierはチケット04「複数時点の予測を固定する」です。
+チケット04「複数時点の予測を固定する」まで完了しました。観測時刻と受付時刻を分けてオッズ時点を保存し、市場基準予測の固定、理由付き訂正、事後訂正の評価除外を行えます。次のfrontierはチケット05、06、08です。
 
 ## CSV contract
 
