@@ -25,6 +25,7 @@ type PredictionRun = {
   official_evaluation_eligible: boolean;
   evaluation_exclusion_reason: string | null;
   runners: RunnerPrediction[];
+  analysis_tags: Array<{ rule_key: string; version: number; context: Record<string, unknown> }>;
 };
 
 type Props = { raceId: number; runners: RunnerOdds[] };
@@ -157,6 +158,9 @@ export default function PredictionPanel({ raceId, runners }: Props) {
               <strong>{prediction.status === "active" ? "固定済み" : "無効化済み"} / 市場基準 {prediction.model_version}</strong>
               <span>入力時点 #{prediction.input_snapshot_id} / 固定 {prediction.frozen_at}</span>
               <span>{prediction.runners.map((runner) => `${runner.horse_number}番 ${(runner.win_market_share * 100).toFixed(2)}%`).join(" / ")}</span>
+              <span>{prediction.analysis_tags.length === 0
+                ? "一致した有効タグなし"
+                : `一致タグ: ${prediction.analysis_tags.map((tag) => `${tag.rule_key} v${tag.version}`).join(" / ")}`}</span>
               <span>{prediction.official_evaluation_eligible ? "公式評価対象" : prediction.evaluation_exclusion_reason}</span>
               {prediction.invalidation_reason && <span>理由: {prediction.invalidation_reason}</span>}
               {prediction.status === "active" && (

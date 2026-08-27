@@ -156,6 +156,26 @@ th { color: #8f9b94; font-weight: 500; }
 .empty-note { color: #68756e; font-size: 0.82rem; }
 .correction-form { display: grid; gap: 7px; margin-top: 6px; }
 
+.analysis-tags { padding: 28px; }
+.tags-heading { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.tags-heading h3 { margin: 0 0 8px; font-family: Georgia, "Yu Mincho", serif; }
+.tags-heading p { margin: 0; color: #8f9b94; font-size: 0.84rem; }
+.tag-card { margin-top: 14px; border: 1px solid rgba(220, 204, 170, 0.14); padding: 14px 16px; }
+.tag-card summary { display: flex; justify-content: space-between; gap: 18px; cursor: pointer; }
+.tag-card summary span { color: #aeb8b2; font-size: 0.78rem; }
+.tag-card > p { margin: 16px 0 10px; color: #aeb8b2; line-height: 1.7; }
+.tag-card dl { display: grid; gap: 7px; margin: 0 0 14px; }
+.tag-card dl div { display: grid; grid-template-columns: 6rem 1fr; gap: 10px; font-size: 0.8rem; }
+.tag-card dt { color: #8f9b94; }
+.tag-card dd { margin: 0; }
+.tag-card a { color: #dcccaa; }
+.tag-card > label { display: block; margin: 10px 0 5px; color: #aeb8b2; font-size: 0.78rem; }
+.tag-card textarea, .tag-card input { width: 100%; padding: 9px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
+.tag-card textarea { font-family: Consolas, monospace; font-size: 0.78rem; }
+.tag-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.tag-actions button { padding: 7px 10px; font-size: 0.74rem; }
+.tag-history { margin: 12px 0 0; color: #a8ceb2; font-size: 0.78rem; }
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -286,6 +306,7 @@ footer {
   .import-form { grid-template-columns: 1fr; padding: 20px; }
   .candidate-empty { flex-direction: column; gap: 8px; padding: 20px; }
   .snapshot-form, .workflow-columns, .odds-editor fieldset { grid-template-columns: 1fr; }
+  .tags-heading, .tag-card summary { flex-direction: column; }
 
   .status-card {
     min-height: 0;

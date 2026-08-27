@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import PredictionPanel from "./PredictionPanel";
+import AnalysisTagsPanel from "./AnalysisTagsPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -237,9 +238,13 @@ function App() {
         )}
       </section>
 
+      <section className="panel analysis-panel" aria-label="分析タグ管理">
+        <AnalysisTagsPanel />
+      </section>
+
       <footer>
-        <span>チケト04</span>
-        <span>複数時点の予測を固定する</span>
+        <span>チケット05</span>
+        <span>文献由来の分析タグを管理する</span>
       </footer>
     </main>
   );

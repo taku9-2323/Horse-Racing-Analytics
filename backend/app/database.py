@@ -1,7 +1,10 @@
 from pathlib import Path
 import sqlite3
+import json
 from collections.abc import Sequence
 from typing import Any
+
+from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
 
 
 class RaceImportConflictError(Exception):
@@ -129,6 +132,72 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '3' WHERE key = 'schema_version'"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_tag_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_key TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    evidence_summary TEXT NOT NULL,
+                    study_period TEXT NOT NULL,
+                    population TEXT NOT NULL,
+                    evidence_quality TEXT NOT NULL,
+                    conditions_json TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    probability_multiplier REAL,
+                    created_at TEXT NOT NULL,
+                    supersedes_rule_version_id INTEGER REFERENCES analysis_tag_versions(id),
+                    UNIQUE (rule_key, version)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_tag_audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_key TEXT NOT NULL,
+                    rule_version_id INTEGER NOT NULL REFERENCES analysis_tag_versions(id),
+                    action TEXT NOT NULL CHECK (action IN ('enabled', 'disabled', 'version_created')),
+                    reason TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO analysis_tag_versions (
+                    rule_key, version, title, source_url, evidence_summary,
+                    study_period, population, evidence_quality, conditions_json,
+                    enabled, probability_multiplier, created_at
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 0, NULL, '2026-08-15T00:00:00Z')
+                """,
+                [
+                    (
+                        tag["rule_key"], tag["title"], tag["source_url"],
+                        tag["evidence_summary"], tag["study_period"], tag["population"],
+                        tag["evidence_quality"], json.dumps(tag["conditions"], ensure_ascii=False),
+                    )
+                    for tag in INITIAL_ANALYSIS_TAGS
+                ],
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '4' WHERE key = 'schema_version'"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prediction_analysis_tags (
+                    prediction_run_id INTEGER NOT NULL REFERENCES prediction_runs(id),
+                    rule_version_id INTEGER NOT NULL REFERENCES analysis_tag_versions(id),
+                    context_json TEXT NOT NULL,
+                    PRIMARY KEY (prediction_run_id, rule_version_id)
+                )
+                """
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '5' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -136,7 +205,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("3",):
+        if row != ("5",):
             raise RuntimeError("SQLite schema is not ready")
 
     def import_race(self, race: dict[str, Any], runners: Sequence[dict[str, Any]]) -> tuple[int, bool]:
@@ -342,7 +411,7 @@ class SqliteDatabase:
             if snapshot is None:
                 raise LookupError("snapshot_not_found")
             race = connection.execute(
-                "SELECT start_utc FROM races WHERE id = ?", (snapshot["race_id"],)
+                "SELECT * FROM races WHERE id = ?", (snapshot["race_id"],)
             ).fetchone()
             if race is None:
                 raise LookupError("race_not_found")
@@ -410,9 +479,59 @@ class SqliteDatabase:
                     for row, raw in zip(odds, raw_values, strict=True)
                 ],
             )
+            race_runners = connection.execute(
+                "SELECT * FROM runners WHERE race_id = ? ORDER BY horse_number",
+                (snapshot["race_id"],),
+            ).fetchall()
+            previous_snapshot = connection.execute(
+                """
+                SELECT id FROM odds_snapshots
+                WHERE race_id = ? AND observed_at < ?
+                ORDER BY observed_at DESC, id DESC LIMIT 1
+                """,
+                (snapshot["race_id"], snapshot["observed_at"]),
+            ).fetchone()
+            previous_odds = None
+            previous_snapshot_id = None
+            if previous_snapshot is not None:
+                previous_snapshot_id = int(previous_snapshot["id"])
+                previous_odds = connection.execute(
+                    "SELECT * FROM odds_snapshot_runners WHERE snapshot_id = ? ORDER BY horse_number",
+                    (previous_snapshot_id,),
+                ).fetchall()
+            enabled_tags = connection.execute(
+                """
+                SELECT tag.* FROM analysis_tag_versions AS tag
+                JOIN (
+                    SELECT rule_key, MAX(version) AS version
+                    FROM analysis_tag_versions GROUP BY rule_key
+                ) AS latest
+                  ON latest.rule_key = tag.rule_key AND latest.version = tag.version
+                WHERE tag.enabled = 1 ORDER BY tag.id
+                """
+            ).fetchall()
+            for tag in enabled_tags:
+                context = build_tag_context(
+                    str(tag["rule_key"]), json.loads(str(tag["conditions_json"])),
+                    dict(race), [dict(row) for row in race_runners], [dict(row) for row in odds],
+                    dict(snapshot),
+                    None if previous_odds is None else [dict(row) for row in previous_odds],
+                    previous_snapshot_id,
+                )
+                if context is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO prediction_analysis_tags (
+                            prediction_run_id, rule_version_id, context_json
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (prediction_id, tag["id"], json.dumps(context, ensure_ascii=False)),
+                    )
         return prediction_id
 
-    def get_prediction(self, prediction_id: int) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+    def get_prediction(
+        self, prediction_id: int,
+    ) -> tuple[sqlite3.Row, list[sqlite3.Row], list[sqlite3.Row]] | None:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             prediction = connection.execute(
@@ -427,9 +546,20 @@ class SqliteDatabase:
                 """,
                 (prediction_id,),
             ).fetchall()
-        return prediction, runners
+            tags = connection.execute(
+                """
+                SELECT tag.rule_key, tag.version, match.context_json
+                FROM prediction_analysis_tags AS match
+                JOIN analysis_tag_versions AS tag ON tag.id = match.rule_version_id
+                WHERE match.prediction_run_id = ? ORDER BY tag.id
+                """,
+                (prediction_id,),
+            ).fetchall()
+        return prediction, runners, tags
 
-    def list_predictions(self, race_id: int) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
+    def list_predictions(
+        self, race_id: int,
+    ) -> list[tuple[sqlite3.Row, list[sqlite3.Row], list[sqlite3.Row]]]:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             predictions = connection.execute(
@@ -443,6 +573,139 @@ class SqliteDatabase:
                         "SELECT * FROM runner_predictions WHERE prediction_run_id = ? ORDER BY horse_number",
                         (prediction["id"],),
                     ).fetchall(),
+                    connection.execute(
+                        """
+                        SELECT tag.rule_key, tag.version, match.context_json
+                        FROM prediction_analysis_tags AS match
+                        JOIN analysis_tag_versions AS tag ON tag.id = match.rule_version_id
+                        WHERE match.prediction_run_id = ? ORDER BY tag.id
+                        """,
+                        (prediction["id"],),
+                    ).fetchall(),
                 )
                 for prediction in predictions
             ]
+
+    def list_analysis_tags(self) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                """
+                SELECT tag.* FROM analysis_tag_versions AS tag
+                JOIN (
+                    SELECT rule_key, MAX(version) AS version
+                    FROM analysis_tag_versions GROUP BY rule_key
+                ) AS latest
+                  ON latest.rule_key = tag.rule_key AND latest.version = tag.version
+                ORDER BY tag.id
+                """
+            ).fetchall()
+
+    def get_analysis_tag(self, tag_id: int) -> sqlite3.Row | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            row: sqlite3.Row | None = connection.execute(
+                "SELECT * FROM analysis_tag_versions WHERE id = ?", (tag_id,)
+            ).fetchone()
+            return row
+
+    @staticmethod
+    def _get_latest_analysis_tag(connection: sqlite3.Connection, tag_id: int) -> sqlite3.Row:
+        tag: sqlite3.Row | None = connection.execute(
+            """
+            SELECT requested.*,
+                   (SELECT id FROM analysis_tag_versions
+                    WHERE rule_key = requested.rule_key
+                    ORDER BY version DESC LIMIT 1) AS latest_id
+            FROM analysis_tag_versions AS requested WHERE requested.id = ?
+            """,
+            (tag_id,),
+        ).fetchone()
+        if tag is None:
+            raise LookupError("analysis_tag_not_found")
+        if int(tag["latest_id"]) != int(tag["id"]):
+            raise ValueError("analysis_tag_version_is_stale")
+        return tag
+
+    def set_analysis_tag_state(
+        self, tag_id: int, enabled: bool, reason: str, occurred_at: str,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            tag = self._get_latest_analysis_tag(connection, tag_id)
+            connection.execute(
+                "UPDATE analysis_tag_versions SET enabled = ? WHERE id = ?",
+                (int(enabled), tag_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO analysis_tag_audit_events (
+                    rule_key, rule_version_id, action, reason, occurred_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (tag["rule_key"], tag_id, "enabled" if enabled else "disabled", reason, occurred_at),
+            )
+
+    def create_analysis_tag_version(
+        self, tag_id: int, conditions: dict[str, Any], reason: str, occurred_at: str,
+    ) -> int:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            original = self._get_latest_analysis_tag(connection, tag_id)
+            validate_tag_conditions(str(original["rule_key"]), conditions)
+            if bool(original["enabled"]):
+                connection.execute(
+                    "UPDATE analysis_tag_versions SET enabled = 0 WHERE id = ?", (tag_id,)
+                )
+                connection.execute(
+                    """
+                    INSERT INTO analysis_tag_audit_events (
+                        rule_key, rule_version_id, action, reason, occurred_at
+                    ) VALUES (?, ?, 'disabled', ?, ?)
+                    """,
+                    (original["rule_key"], tag_id, f"新版作成: {reason}", occurred_at),
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO analysis_tag_versions (
+                    rule_key, version, title, source_url, evidence_summary,
+                    study_period, population, evidence_quality, conditions_json,
+                    enabled, probability_multiplier, created_at,
+                    supersedes_rule_version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                """,
+                (
+                    original["rule_key"], int(original["version"]) + 1,
+                    original["title"], original["source_url"], original["evidence_summary"],
+                    original["study_period"], original["population"], original["evidence_quality"],
+                    json.dumps(conditions, ensure_ascii=False), occurred_at, tag_id,
+                ),
+            )
+            new_id = cursor.lastrowid
+            if new_id is None:
+                raise RuntimeError("Analysis tag version could not be saved")
+            connection.execute(
+                """
+                INSERT INTO analysis_tag_audit_events (
+                    rule_key, rule_version_id, action, reason, occurred_at
+                ) VALUES (?, ?, 'version_created', ?, ?)
+                """,
+                (original["rule_key"], new_id, reason, occurred_at),
+            )
+        return int(new_id)
+
+    def list_analysis_tag_versions(self, rule_key: str) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                "SELECT * FROM analysis_tag_versions WHERE rule_key = ? ORDER BY version",
+                (rule_key,),
+            ).fetchall()
+
+    def list_analysis_tag_audit(self, rule_key: str) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                "SELECT * FROM analysis_tag_audit_events WHERE rule_key = ? ORDER BY id",
+                (rule_key,),
+            ).fetchall()

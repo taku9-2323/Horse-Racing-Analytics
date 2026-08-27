@@ -134,7 +134,8 @@ describe("prediction freezing", () => {
     const prediction = { id: 20, race_id: 1, input_snapshot_id: 10, model_identifier: "market-baseline", model_version: "1.0",
       frozen_at: "2026-08-30T05:01:00Z", status: "active", invalidation_reason: null, replaces_prediction_id: null,
       official_evaluation_eligible: true, evaluation_exclusion_reason: null,
-      runners: [{ horse_number: 1, raw_inverse_win_odds: 0.5, win_market_share: 1 }] };
+      runners: [{ horse_number: 1, raw_inverse_win_odds: 0.5, win_market_share: 1 }],
+      analysis_tags: [{ rule_key: "market_odds_level", version: 1, context: { runners: [1] } }] };
     const invalidated = { ...prediction, status: "invalidated", invalidation_reason: "入力ミス",
       official_evaluation_eligible: false, evaluation_exclusion_reason: "理由付きで無効化された旧版" };
     const replacement = { ...prediction, id: 21, replaces_prediction_id: 20,
@@ -175,6 +176,7 @@ describe("prediction freezing", () => {
     expect(screen.getByText("公式評価対象")).toBeTruthy();
     expect(screen.getByText(/入力時点 #10/)).toBeTruthy();
     expect(screen.getByText("1番 100.00%")).toBeTruthy();
+    expect(screen.getByText("一致タグ: market_odds_level v1")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("訂正理由"), { target: { value: "入力ミス" } });
     fireEvent.click(screen.getByRole("button", { name: "最新時点で訂正版を作成" }));
@@ -183,5 +185,55 @@ describe("prediction freezing", () => {
     expect(screen.getByText("理由: 入力ミス")).toBeTruthy();
     expect(screen.getAllByText("固定済み / 市場基準 1.0")).toHaveLength(1);
     expect(screen.getByText("発走後に固定された事後訂正")).toBeTruthy();
+  });
+});
+
+describe("analysis tag management", () => {
+  it("shows evidence, audits activation, and creates a new condition version", async () => {
+    const tag = {
+      id: 1, rule_key: "market_odds_level", version: 1, title: "単勝オッズ水準",
+      source_url: "https://example.test/study", evidence_summary: "保存時点での利益は未検証です。",
+      study_period: "2004–2023年", population: "JRA 63,372レース", evidence_quality: "B",
+      conditions: { filters: [{ field: "win_odds", operator: "gt", value: 0 }] }, enabled: false, probability_multiplier: null,
+    };
+    const enabled = { ...tag, enabled: true };
+    const replacement = { ...tag, id: 2, version: 2, conditions: { filters: [{ field: "win_odds", operator: "range", value: [1, 3] }] } };
+    const jsonResponse = (value: object, status = 200) => new Response(JSON.stringify(value), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(jsonResponse([tag]))
+      .mockResolvedValueOnce(jsonResponse(enabled))
+      .mockResolvedValueOnce(jsonResponse([{
+        id: 1, rule_key: tag.rule_key, rule_version_id: 1, action: "enabled",
+        reason: "前向き検証", occurred_at: "2026-08-26T12:00:00Z",
+      }]))
+      .mockResolvedValueOnce(jsonResponse(replacement, 201))
+      .mockResolvedValueOnce(jsonResponse([tag, replacement])));
+    render(<App />);
+    await screen.findByRole("article", { name: "APIの状態" });
+
+    fireEvent.click(screen.getByRole("button", { name: "分析タグを表示" }));
+    expect(await screen.findByText("単勝オッズ水準 v1")).toBeTruthy();
+    fireEvent.click(screen.getByText("単勝オッズ水準 v1"));
+    expect(screen.getByText("保存時点での利益は未検証です。")).toBeTruthy();
+    expect(screen.getByText("2004–2023年")).toBeTruthy();
+    expect(screen.getByText("JRA 63,372レース")).toBeTruthy();
+    expect(screen.getByText("無効 / 証拠品質 B / 倍率なし")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("変更理由"), { target: { value: "前向き検証" } });
+    fireEvent.click(screen.getByRole("button", { name: "有効化" }));
+    expect(await screen.findByText("有効（タグのみ） / 証拠品質 B / 倍率なし")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "監査履歴を表示" }));
+    expect(await screen.findByText("enabled / 前向き検証 / 2026-08-26T12:00:00Z")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("適用条件（JSON）"), { target: { value: '{"filters":[{"field":"win_odds","operator":"range","value":[1,3]}]}' } });
+    fireEvent.change(screen.getByLabelText("変更理由"), { target: { value: "帯を事前固定" } });
+    fireEvent.click(screen.getByRole("button", { name: "条件を新版として保存" }));
+    expect(await screen.findByText("単勝オッズ水準 v2")).toBeTruthy();
+    expect(screen.getByText("無効 / 証拠品質 B / 倍率なし")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "版履歴を表示" }));
+    expect(await screen.findByText("版履歴: v1 → v2")).toBeTruthy();
   });
 });

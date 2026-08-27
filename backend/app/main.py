@@ -9,6 +9,10 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
 from app.database import RaceImportConflictError, SqliteDatabase
+from app.analysis_tags import (
+    AnalysisTag, AnalysisTagConditionError, TagAuditEvent, TagStateChange, TagVersionCreate,
+    analysis_tag_response, audit_event_response,
+)
 from app.race_analysis import CsvValidationError, RaceAnalysis, build_analysis, parse_race_csv
 from app.predictions import (
     CorrectionRequest, FreezeRequest, OddsSnapshot, PredictionRun, SnapshotCreate,
@@ -176,6 +180,50 @@ def create_app(
     @app.get("/api/races/{race_id}/predictions", response_model=list[PredictionRun])
     def list_prediction_runs(race_id: int) -> list[PredictionRun]:
         return [prediction_response(*stored) for stored in database.list_predictions(race_id)]
+
+    @app.get("/api/analysis-tags", response_model=list[AnalysisTag])
+    def list_analysis_tags() -> list[AnalysisTag]:
+        return [analysis_tag_response(row) for row in database.list_analysis_tags()]
+
+    @app.post("/api/analysis-tags/{tag_id}/state", response_model=AnalysisTag)
+    def change_analysis_tag_state(tag_id: int, request: TagStateChange) -> AnalysisTag:
+        try:
+            database.set_analysis_tag_state(
+                tag_id, request.enabled, request.reason, utc_iso(current_time()),
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "分析タグが見つかりません。"}) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail={"code": str(error), "message": "旧版の状態は変更できません。"}) from error
+        stored = database.get_analysis_tag(tag_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="更新した分析タグを読み込めません。")
+        return analysis_tag_response(stored)
+
+    @app.post("/api/analysis-tags/{tag_id}/versions", response_model=AnalysisTag, status_code=201)
+    def create_analysis_tag_version(tag_id: int, request: TagVersionCreate) -> AnalysisTag:
+        try:
+            new_id = database.create_analysis_tag_version(
+                tag_id, request.conditions, request.reason, utc_iso(current_time()),
+            )
+        except AnalysisTagConditionError as error:
+            raise HTTPException(status_code=422, detail={"code": "invalid_tag_conditions", "message": str(error)}) from error
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "分析タグが見つかりません。"}) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail={"code": str(error), "message": "旧版から新版は作成できません。"}) from error
+        stored = database.get_analysis_tag(new_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="作成した分析タグ版を読み込めません。")
+        return analysis_tag_response(stored)
+
+    @app.get("/api/analysis-tags/{rule_key}/versions", response_model=list[AnalysisTag])
+    def list_analysis_tag_versions(rule_key: str) -> list[AnalysisTag]:
+        return [analysis_tag_response(row) for row in database.list_analysis_tag_versions(rule_key)]
+
+    @app.get("/api/analysis-tags/{rule_key}/audit", response_model=list[TagAuditEvent])
+    def list_analysis_tag_audit(rule_key: str) -> list[TagAuditEvent]:
+        return [audit_event_response(row) for row in database.list_analysis_tag_audit(rule_key)]
 
     frontend_dist = frontend_dist_path or default_frontend_dist_path()
     if frontend_dist.is_dir():

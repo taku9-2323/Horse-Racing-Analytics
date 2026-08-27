@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.analysis_tags import AppliedAnalysisTag, applied_tag_response
+
 
 def utc_iso(value: datetime) -> str:
     if value.tzinfo is None:
@@ -82,6 +84,7 @@ class PredictionRun(BaseModel):
     official_evaluation_eligible: bool
     evaluation_exclusion_reason: str | None
     runners: list[RunnerPrediction]
+    analysis_tags: list[AppliedAnalysisTag]
 
 
 def snapshot_response(snapshot: Any, runners: list[Any]) -> OddsSnapshot:
@@ -97,7 +100,7 @@ def snapshot_response(snapshot: Any, runners: list[Any]) -> OddsSnapshot:
     )
 
 
-def prediction_response(prediction: Any, runners: list[Any]) -> PredictionRun:
+def prediction_response(prediction: Any, runners: list[Any], tags: list[Any]) -> PredictionRun:
     return PredictionRun(
         id=int(prediction["id"]), race_id=int(prediction["race_id"]),
         input_snapshot_id=int(prediction["input_snapshot_id"]),
@@ -112,4 +115,5 @@ def prediction_response(prediction: Any, runners: list[Any]) -> PredictionRun:
             raw_inverse_win_odds=float(runner["raw_inverse_win_odds"]),
             win_market_share=float(runner["win_market_share"]),
         ) for runner in runners],
+        analysis_tags=[applied_tag_response(tag) for tag in tags],
     )
