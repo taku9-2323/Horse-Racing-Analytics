@@ -192,6 +192,31 @@ th { color: #8f9b94; font-weight: 500; }
 .settlement-summary strong { color: #c6a766; }
 .decision-totals { display: flex; gap: 20px; margin-top: 10px; color: #8f9b94; font-size: 0.76rem; }
 
+.maintenance-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 24px 28px; }
+.maintenance-actions a {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 13px;
+  border: 1px solid rgba(220, 204, 170, 0.25);
+  color: #dcccaa;
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+.maintenance-panel .message { padding: 12px 28px 20px; }
+.backup-list { display: grid; gap: 10px; margin: 0; padding: 0 28px 28px; list-style: none; }
+.backup-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(220, 204, 170, 0.14);
+}
+.backup-list li > div:first-child { display: grid; gap: 4px; }
+.backup-list span, .backup-list small { color: #8f9b94; font-size: 0.74rem; }
+.backup-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.backup-row-actions button { padding: 7px 10px; font-size: 0.74rem; }
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -325,6 +350,8 @@ footer {
   .tags-heading, .tag-card summary { flex-direction: column; }
   .betting-heading, .decision-totals { flex-direction: column; }
   .bet-form, .result-import, .settlement-summary { grid-template-columns: 1fr; }
+  .maintenance-actions, .backup-list { padding-right: 20px; padding-left: 20px; }
+  .backup-list li { align-items: stretch; flex-direction: column; }
 
   .status-card {
     min-height: 0;

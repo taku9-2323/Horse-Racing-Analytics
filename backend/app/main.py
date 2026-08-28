@@ -1,14 +1,20 @@
+from collections.abc import Iterator
 from os import environ
 from pathlib import Path
 import sqlite3
+from threading import Lock
 from datetime import datetime, timezone
 from typing import Callable, Literal
 
-from fastapi import Body, FastAPI, HTTPException, Query, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
 from app.database import RaceImportConflictError, SqliteDatabase
+from app.data_maintenance import (
+    BackupNotFoundError, BackupSummary, DataMaintenance, InvalidBackupError,
+    RestoreSummary,
+)
 from app.bets import (
     Bet, BetCreate, RaceLedger, ResultCsvValidationError, ResultVersion,
     bet_response, parse_results_csv, pending_totals_for, result_response,
@@ -59,15 +65,27 @@ def create_app(
     frontend_dist_path: Path | None = None,
     now_provider: Callable[[], datetime] | None = None,
 ) -> FastAPI:
-    database = SqliteDatabase(database_path or default_database_path())
+    resolved_database_path = database_path or default_database_path()
+    database = SqliteDatabase(resolved_database_path)
     database_initialization_error: Exception | None = None
     try:
         database.initialize()
     except (OSError, sqlite3.Error, RuntimeError) as error:
         database_initialization_error = error
 
-    app = FastAPI(title="Horse Racing Analytics API", version="0.1.0")
+    database_access_lock = Lock()
+
+    def serialized_database_access() -> Iterator[None]:
+        with database_access_lock:
+            yield
+
+    app = FastAPI(
+        title="Horse Racing Analytics API",
+        version="0.1.0",
+        dependencies=[Depends(serialized_database_access)],
+    )
     current_time = now_provider or (lambda: datetime.now(timezone.utc))
+    data_maintenance = DataMaintenance(resolved_database_path, current_time)
 
     @app.get("/api/health", response_model=HealthResponse)
     def health(response: Response) -> HealthResponse:
@@ -325,6 +343,70 @@ def create_app(
             result_version=None if result is None else result_response(*result),
             settlements=[settlement_response(settlement) for settlement in settlements],
             totals=totals, by_decision_type=by_decision_type,
+        )
+
+    @app.post("/api/data/backups", response_model=BackupSummary, status_code=201)
+    def create_backup() -> BackupSummary:
+        try:
+            return data_maintenance.create_backup()
+        except (OSError, sqlite3.Error, InvalidBackupError) as error:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "backup_failed", "message": "バックアップを作成できませんでした。"},
+            ) from error
+
+    @app.get("/api/data/backups", response_model=list[BackupSummary])
+    def list_backups() -> list[BackupSummary]:
+        return data_maintenance.list_backups()
+
+    @app.post("/api/data/backups/{backup_id}/verify", response_model=BackupSummary)
+    def verify_backup(backup_id: str) -> BackupSummary:
+        try:
+            return data_maintenance.verify_backup(backup_id)
+        except BackupNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "backup_not_found", "message": "バックアップが見つかりません。"},
+            ) from error
+        except InvalidBackupError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "backup_invalid", "message": "バックアップが破損しているか形式が違います。"},
+            ) from error
+
+    @app.post("/api/data/backups/{backup_id}/restore", response_model=RestoreSummary)
+    def restore_backup(backup_id: str) -> RestoreSummary:
+        try:
+            return data_maintenance.restore_backup(backup_id)
+        except BackupNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "backup_not_found", "message": "バックアップが見つかりません。"},
+            ) from error
+        except InvalidBackupError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "backup_invalid", "message": "検証に失敗したバックアップは復元できません。"},
+            ) from error
+        except (OSError, sqlite3.Error) as error:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "restore_failed", "message": "復元できませんでした。現在データは変更されていません。"},
+            ) from error
+
+    @app.get("/api/data/export")
+    def export_data(export_format: Literal["json", "csv"] = Query(alias="format")) -> Response:
+        try:
+            artifact = data_maintenance.export(export_format)
+        except (OSError, sqlite3.Error) as error:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "export_failed", "message": "データを出力できませんでした。"},
+            ) from error
+        return Response(
+            content=artifact.content,
+            media_type=artifact.media_type,
+            headers={"Content-Disposition": f'attachment; filename="{artifact.filename}"'},
         )
 
     frontend_dist = frontend_dist_path or default_frontend_dist_path()

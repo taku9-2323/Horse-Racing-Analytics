@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import PredictionPanel from "./PredictionPanel";
 import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
+import DataMaintenancePanel from "./DataMaintenancePanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -249,9 +250,11 @@ function App() {
         <AnalysisTagsPanel />
       </section>
 
+      <DataMaintenancePanel />
+
       <footer>
-        <span>チケット06</span>
-        <span>実購入と結果を記録する</span>
+        <span>チケット08</span>
+        <span>バックアップ・復元・データ出力</span>
       </footer>
     </main>
   );

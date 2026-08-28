@@ -2,15 +2,16 @@
 
 ## Product boundary
 
-The first release is a single-user, local-only JRA analytics prototype. It imports user-prepared CSV files, generates a win market baseline and experimental analysis tags, preserves place break-even information, identifies expected-value candidates only when an independent probability model exists, freezes predictions before results are known, settles real and hypothetical bets, and evaluates calibration and returns.
+The first release is a single-user, local-only JRA analytics prototype. It accepts user-prepared CSV files and user-initiated acquisition from login-free JRA public pages, generates a win market baseline and experimental analysis tags, preserves place break-even information, identifies expected-value candidates only when an independent probability model exists, freezes predictions before results are known, settles real and hypothetical bets, and evaluates calibration and returns.
 
-It does not place bets, scrape netkeiba, automatically retrieve JRA data, authenticate users, charge subscriptions, or claim guaranteed profit.
+It does not place bets, scrape netkeiba, access authenticated JRA pages, crawl arbitrary URLs, run unattended collection, authenticate app users, charge subscriptions, redistribute acquired JRA data, or claim guaranteed profit. CSV remains the fallback whenever public-page acquisition is unavailable or disallowed.
 
 ## Domain glossary
 
 - **Race**: A contest identified independently of any data provider. It records organizer, country, racecourse, local start time, UTC start time, surface, distance, going, and field size.
 - **Runner**: A horse entered in a race, including gate, horse number, age, sex, assigned weight, and status.
 - **Odds snapshot**: The win and place odds observed at one recorded time. Place odds are a lower/upper range.
+- **Source observation**: An immutable, versioned record of facts obtained from one source response, identified by source URL, receipt time, parser version, response hash, and validation outcome. A later correction creates another observation rather than overwriting it.
 - **Prediction model**: A versioned method that produces a win probability, a place probability, or both. The initial market baseline produces only a win market-share proxy; there is no initial independent place-probability model.
 - **Prediction run**: The immutable output of one prediction model for every runner in one race, based on specified input snapshots and an as-of time.
 - **Market baseline**: A win-market consensus proxy inferred from odds. Raw inverse odds and normalized win betting-share proxies are kept separately and are not labeled objective win probabilities.

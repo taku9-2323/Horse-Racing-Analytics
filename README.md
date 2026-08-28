@@ -12,10 +12,11 @@ JRAの単勝・複勝を対象に、レース前の市場情報と将来の独�
 - [UI改善計画](.scratch/horse-racing-analytics/ui-improvement-plan.md)
 - [初期予測ルールの文献調査](docs/research/initial-prediction-rules.md)
 - [複勝オッズに関するADR](docs/adr/0001-place-odds-are-not-probabilities.md)
+- [JRA公開Web取得に関するADR](docs/adr/0002-user-initiated-jra-public-web-acquisition.md)
 
 ## Current status
 
-チケット06「実購入と結果を記録する」まで完了しました。単勝・複勝の実購入を候補外裁量として記録し、公式結果CSVの払戻・返還から購入額、払戻額、返還額、損益、回収率を確認できます。独立モデル由来の実在候補がない現段階では、裁量購入を候補内と誤記録できません。同一結果の再取込はno-op、競合結果や同着は理由付き訂正として履歴を残します。次のfrontierはチケット07、08です。
+チケット08「データをバックアップ・出力する」まで完了しました。画面から整合したSQLiteバックアップを作成・再検証・復元でき、復元前の現在データは自動保全されます。監査・移行用に全業務テーブルをJSONまたはテーブル別CSV ZIPとしてダウンロードできます。次のfrontierはチケット11「JRA公開ページからレースを取得する」です。
 
 ## CSV contract
 
@@ -56,6 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
 UIを変更した場合は、再起動前に `frontend` で `npm run build` を実行します。
 
 SQLiteの実データはOneDrive同期対象外の `%LOCALAPPDATA%\HorseRacingAnalytics` に保存します。
+バックアップは同じローカル領域の `backups` に保存されます。復元操作では対象を検証し、現在DBの保全バックアップを作ってから内容を入れ替えます。
 
 ## Verify
 
