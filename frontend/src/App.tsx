@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PredictionPanel from "./PredictionPanel";
 import AnalysisTagsPanel from "./AnalysisTagsPanel";
+import BettingPanel from "./BettingPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -234,6 +235,12 @@ function App() {
                 place_odds_max: runner.place_odds_max,
               }))}
             />
+            <BettingPanel
+              raceId={analysis.race_id}
+              runners={analysis.runners.map((runner) => ({
+                horse_number: runner.horse_number, horse_name: runner.horse_name,
+              }))}
+            />
           </div>
         )}
       </section>
@@ -243,8 +250,8 @@ function App() {
       </section>
 
       <footer>
-        <span>チケット05</span>
-        <span>文献由来の分析タグを管理する</span>
+        <span>チケット06</span>
+        <span>実購入と結果を記録する</span>
       </footer>
     </main>
   );

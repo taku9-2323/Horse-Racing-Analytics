@@ -4,11 +4,16 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Callable, Literal
 
-from fastapi import Body, FastAPI, HTTPException, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 
 from app.database import RaceImportConflictError, SqliteDatabase
+from app.bets import (
+    Bet, BetCreate, RaceLedger, ResultCsvValidationError, ResultVersion,
+    bet_response, parse_results_csv, pending_totals_for, result_response,
+    settlement_response, totals_for,
+)
 from app.analysis_tags import (
     AnalysisTag, AnalysisTagConditionError, TagAuditEvent, TagStateChange, TagVersionCreate,
     analysis_tag_response, audit_event_response,
@@ -224,6 +229,103 @@ def create_app(
     @app.get("/api/analysis-tags/{rule_key}/audit", response_model=list[TagAuditEvent])
     def list_analysis_tag_audit(rule_key: str) -> list[TagAuditEvent]:
         return [audit_event_response(row) for row in database.list_analysis_tag_audit(rule_key)]
+
+    @app.post("/api/races/{race_id}/bets", response_model=Bet, status_code=201)
+    def create_bet(race_id: int, request: BetCreate) -> Bet:
+        try:
+            bet_id = database.create_bet(
+                race_id, request.horse_number, request.bet_type,
+                request.decision_type, request.amount_yen, utc_iso(current_time()),
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "購入対象の出走馬が見つかりません。"}) from error
+        except ValueError as error:
+            messages = {
+                "race_already_settled": "結果取込後に購入は追加できません。",
+                "place_not_offered": "4頭以下のレースでは複勝を登録できません。",
+                "candidate_not_available": "現在は適格な期待値候補がないため、候補内購入を登録できません。",
+            }
+            raise HTTPException(status_code=409, detail={"code": str(error), "message": messages.get(str(error), "購入を登録できません。")}) from error
+        stored = database.get_bet(bet_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="登録した購入を読み込めません。")
+        return bet_response(stored)
+
+    def save_results(
+        race_id: int, csv_content: bytes, correction_reason: str | None = None,
+    ) -> ResultVersion:
+        try:
+            results = parse_results_csv(
+                csv_content, allow_dead_heat=correction_reason is not None,
+            )
+            result_version_id = database.create_result_version(
+                race_id, results, utc_iso(current_time()), correction_reason,
+            )
+        except ResultCsvValidationError as error:
+            raise HTTPException(status_code=422, detail=error.detail()) from error
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "レースが見つかりません。"}) from error
+        except ValueError as error:
+            status_code = 409 if str(error) in {"result_import_conflict", "result_not_imported"} else 422
+            messages = {
+                "result_import_conflict": "取込済み結果と内容が異なります。理由付き訂正を使用してください。",
+                "result_not_imported": "訂正元の結果がありません。",
+                "result_runner_mismatch": "全出走馬の結果を1件ずつ指定してください。",
+                "result_invalid_position": "着順が出走頭数の範囲外です。",
+                "result_payout_mismatch": "着順・頭数規則と公式払戻の組み合わせを確認してください。",
+            }
+            raise HTTPException(status_code=status_code, detail={"code": str(error), "message": messages.get(str(error), "結果を登録できません。")}) from error
+        stored = database.get_result_version(result_version_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="登録した結果を読み込めません。")
+        return result_response(*stored)
+
+    @app.post("/api/races/{race_id}/results/import", response_model=ResultVersion, status_code=201)
+    def import_results(race_id: int, csv_content: bytes = Body(media_type="text/csv")) -> ResultVersion:
+        return save_results(race_id, csv_content)
+
+    @app.post("/api/races/{race_id}/results/correct", response_model=ResultVersion, status_code=201)
+    def correct_results(
+        race_id: int,
+        reason: str = Query(min_length=1),
+        csv_content: bytes = Body(media_type="text/csv"),
+    ) -> ResultVersion:
+        if not reason.strip():
+            raise HTTPException(status_code=422, detail={"code": "blank_correction_reason", "message": "訂正理由を入力してください。"})
+        return save_results(race_id, csv_content, reason.strip())
+
+    @app.get("/api/races/{race_id}/results", response_model=list[ResultVersion])
+    def list_results(race_id: int) -> list[ResultVersion]:
+        return [result_response(*stored) for stored in database.list_result_versions(race_id)]
+
+    @app.get("/api/races/{race_id}/ledger", response_model=RaceLedger)
+    def get_race_ledger(race_id: int) -> RaceLedger:
+        if database.get_race(race_id) is None:
+            raise HTTPException(status_code=404, detail={"code": "race_not_found", "message": "レースが見つかりません。"})
+        bets, result, settlements = database.get_race_ledger(race_id)
+        if result is None:
+            by_decision_type = {
+                decision_type: pending_totals_for([
+                    bet for bet in bets if str(bet["decision_type"]) == decision_type
+                ])
+                for decision_type in ("candidate", "discretionary")
+            }
+            totals = pending_totals_for(bets)
+        else:
+            by_decision_type = {
+                decision_type: totals_for([
+                    settlement for settlement in settlements
+                    if str(settlement["decision_type"]) == decision_type
+                ])
+                for decision_type in ("candidate", "discretionary")
+            }
+            totals = totals_for(settlements)
+        return RaceLedger(
+            bets=[bet_response(bet) for bet in bets],
+            result_version=None if result is None else result_response(*result),
+            settlements=[settlement_response(settlement) for settlement in settlements],
+            totals=totals, by_decision_type=by_decision_type,
+        )
 
     frontend_dist = frontend_dist_path or default_frontend_dist_path()
     if frontend_dist.is_dir():

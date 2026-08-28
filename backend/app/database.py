@@ -198,6 +198,66 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '5' WHERE key = 'schema_version'"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    race_id INTEGER NOT NULL REFERENCES races(id),
+                    horse_number INTEGER NOT NULL,
+                    bet_type TEXT NOT NULL CHECK (bet_type IN ('win', 'place')),
+                    decision_type TEXT NOT NULL CHECK (decision_type IN ('candidate', 'discretionary')),
+                    amount_yen INTEGER NOT NULL CHECK (amount_yen > 0 AND amount_yen % 100 = 0),
+                    placed_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invalidated')),
+                    invalidation_reason TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS result_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    race_id INTEGER NOT NULL REFERENCES races(id),
+                    version INTEGER NOT NULL,
+                    received_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+                    correction_reason TEXT,
+                    supersedes_result_version_id INTEGER REFERENCES result_versions(id),
+                    UNIQUE (race_id, version)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runner_results (
+                    result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
+                    horse_number INTEGER NOT NULL,
+                    finish_position INTEGER,
+                    status TEXT NOT NULL CHECK (status IN ('確定', '取消', '除外')),
+                    win_payout_per_100 INTEGER NOT NULL CHECK (win_payout_per_100 >= 0),
+                    place_payout_per_100 INTEGER NOT NULL CHECK (place_payout_per_100 >= 0),
+                    PRIMARY KEY (result_version_id, horse_number)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settlements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bet_id INTEGER NOT NULL REFERENCES bets(id),
+                    result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
+                    stake_yen INTEGER NOT NULL,
+                    payout_yen INTEGER NOT NULL,
+                    refund_yen INTEGER NOT NULL,
+                    profit_yen INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded')),
+                    UNIQUE (bet_id, result_version_id)
+                )
+                """
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '6' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -205,7 +265,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("5",):
+        if row != ("6",):
             raise RuntimeError("SQLite schema is not ready")
 
     def import_race(self, race: dict[str, Any], runners: Sequence[dict[str, Any]]) -> tuple[int, bool]:
@@ -709,3 +769,250 @@ class SqliteDatabase:
                 "SELECT * FROM analysis_tag_audit_events WHERE rule_key = ? ORDER BY id",
                 (rule_key,),
             ).fetchall()
+
+    def create_bet(
+        self, race_id: int, horse_number: int, bet_type: str,
+        decision_type: str, amount_yen: int, placed_at: str,
+    ) -> int:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            runner = connection.execute(
+                "SELECT * FROM runners WHERE race_id = ? AND horse_number = ?",
+                (race_id, horse_number),
+            ).fetchone()
+            if runner is None:
+                raise LookupError("runner_not_found")
+            active_result = connection.execute(
+                "SELECT id FROM result_versions WHERE race_id = ? AND status = 'active'",
+                (race_id,),
+            ).fetchone()
+            if active_result is not None:
+                raise ValueError("race_already_settled")
+            if decision_type == "candidate":
+                # Candidate records will be introduced with the independent-model workflow.
+                # Until then, accepting this label would mix discretionary judgment into model results.
+                raise ValueError("candidate_not_available")
+            if bet_type == "place":
+                field_size = connection.execute(
+                    "SELECT COUNT(*) FROM runners WHERE race_id = ?", (race_id,)
+                ).fetchone()
+                if field_size is None or int(field_size[0]) < 5:
+                    raise ValueError("place_not_offered")
+            cursor = connection.execute(
+                """
+                INSERT INTO bets (
+                    race_id, horse_number, bet_type, decision_type,
+                    amount_yen, placed_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (race_id, horse_number, bet_type, decision_type, amount_yen, placed_at),
+            )
+            bet_id = cursor.lastrowid
+            if bet_id is None:
+                raise RuntimeError("Bet could not be saved")
+        return int(bet_id)
+
+    def get_bet(self, bet_id: int) -> sqlite3.Row | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            row: sqlite3.Row | None = connection.execute(
+                "SELECT * FROM bets WHERE id = ?", (bet_id,)
+            ).fetchone()
+            return row
+
+    def create_result_version(
+        self, race_id: int, results: list[dict[str, Any]], received_at: str,
+        correction_reason: str | None = None,
+    ) -> int:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            race = connection.execute("SELECT id FROM races WHERE id = ?", (race_id,)).fetchone()
+            if race is None:
+                raise LookupError("race_not_found")
+            active = connection.execute(
+                "SELECT * FROM result_versions WHERE race_id = ? AND status = 'active'",
+                (race_id,),
+            ).fetchone()
+            if active is not None and correction_reason is None:
+                stored_results = connection.execute(
+                    """
+                    SELECT horse_number, finish_position, status,
+                           win_payout_per_100, place_payout_per_100
+                    FROM runner_results
+                    WHERE result_version_id = ?
+                    ORDER BY horse_number
+                    """,
+                    (active["id"],),
+                ).fetchall()
+                supplied = sorted(
+                    (
+                        int(result["horse_number"]), result["finish_position"], result["status"],
+                        int(result["win_payout_per_100"]), int(result["place_payout_per_100"]),
+                    )
+                    for result in results
+                )
+                stored = [
+                    (
+                        int(result["horse_number"]), result["finish_position"], result["status"],
+                        int(result["win_payout_per_100"]), int(result["place_payout_per_100"]),
+                    )
+                    for result in stored_results
+                ]
+                if supplied == stored:
+                    return int(active["id"])
+                raise ValueError("result_import_conflict")
+            if active is None and correction_reason is not None:
+                raise ValueError("result_not_imported")
+            runner_numbers = {
+                int(row[0]) for row in connection.execute(
+                    "SELECT horse_number FROM runners WHERE race_id = ?", (race_id,)
+                ).fetchall()
+            }
+            supplied_numbers = {int(result["horse_number"]) for result in results}
+            if supplied_numbers != runner_numbers:
+                raise ValueError("result_runner_mismatch")
+            field_size = len(runner_numbers)
+            place_positions = 0 if field_size <= 4 else 2 if field_size <= 7 else 3
+            for result in results:
+                if result["status"] != "確定":
+                    continue
+                finish_position = int(result["finish_position"])
+                if finish_position > field_size:
+                    raise ValueError("result_invalid_position")
+                win_should_pay = finish_position == 1
+                place_should_pay = place_positions > 0 and finish_position <= place_positions
+                if (int(result["win_payout_per_100"]) > 0) != win_should_pay:
+                    raise ValueError("result_payout_mismatch")
+                if (int(result["place_payout_per_100"]) > 0) != place_should_pay:
+                    raise ValueError("result_payout_mismatch")
+            version = 1 if active is None else int(active["version"]) + 1
+            supersedes_id = None if active is None else int(active["id"])
+            if active is not None:
+                connection.execute(
+                    "UPDATE result_versions SET status = 'superseded' WHERE id = ?",
+                    (active["id"],),
+                )
+                connection.execute(
+                    "UPDATE settlements SET status = 'superseded' WHERE result_version_id = ?",
+                    (active["id"],),
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO result_versions (
+                    race_id, version, received_at, status, correction_reason,
+                    supersedes_result_version_id
+                ) VALUES (?, ?, ?, 'active', ?, ?)
+                """,
+                (race_id, version, received_at, correction_reason, supersedes_id),
+            )
+            result_version_id = cursor.lastrowid
+            if result_version_id is None:
+                raise RuntimeError("Result version could not be saved")
+            connection.executemany(
+                """
+                INSERT INTO runner_results (
+                    result_version_id, horse_number, finish_position, status,
+                    win_payout_per_100, place_payout_per_100
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [(
+                    result_version_id, result["horse_number"], result["finish_position"],
+                    result["status"], result["win_payout_per_100"], result["place_payout_per_100"],
+                ) for result in results],
+            )
+            bets = connection.execute(
+                "SELECT * FROM bets WHERE race_id = ? AND status = 'active' ORDER BY id",
+                (race_id,),
+            ).fetchall()
+            results_by_horse = {int(result["horse_number"]): result for result in results}
+            for bet in bets:
+                result = results_by_horse[int(bet["horse_number"])]
+                stake = int(bet["amount_yen"])
+                refunded = result["status"] in {"取消", "除外"}
+                payout_per_100 = int(result[
+                    "win_payout_per_100" if bet["bet_type"] == "win" else "place_payout_per_100"
+                ])
+                payout = 0 if refunded else stake // 100 * payout_per_100
+                refund = stake if refunded else 0
+                connection.execute(
+                    """
+                    INSERT INTO settlements (
+                        bet_id, result_version_id, stake_yen, payout_yen,
+                        refund_yen, profit_yen, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+                    """,
+                    (bet["id"], result_version_id, stake, payout, refund, payout + refund - stake),
+                )
+        return int(result_version_id)
+
+    def list_result_versions(
+        self, race_id: int,
+    ) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            versions = connection.execute(
+                "SELECT * FROM result_versions WHERE race_id = ? ORDER BY version",
+                (race_id,),
+            ).fetchall()
+            return [
+                (
+                    version,
+                    connection.execute(
+                        "SELECT * FROM runner_results WHERE result_version_id = ? ORDER BY horse_number",
+                        (version["id"],),
+                    ).fetchall(),
+                )
+                for version in versions
+            ]
+
+    def get_result_version(
+        self, result_version_id: int,
+    ) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            version = connection.execute(
+                "SELECT * FROM result_versions WHERE id = ?", (result_version_id,)
+            ).fetchone()
+            if version is None:
+                return None
+            runners = connection.execute(
+                "SELECT * FROM runner_results WHERE result_version_id = ? ORDER BY horse_number",
+                (result_version_id,),
+            ).fetchall()
+        return version, runners
+
+    def get_race_ledger(
+        self, race_id: int,
+    ) -> tuple[
+        list[sqlite3.Row], tuple[sqlite3.Row, list[sqlite3.Row]] | None, list[sqlite3.Row]
+    ]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            bets = connection.execute(
+                "SELECT * FROM bets WHERE race_id = ? AND status = 'active' ORDER BY id",
+                (race_id,),
+            ).fetchall()
+            version = connection.execute(
+                "SELECT * FROM result_versions WHERE race_id = ? AND status = 'active'",
+                (race_id,),
+            ).fetchone()
+            result = None
+            if version is not None:
+                result = (
+                    version,
+                    connection.execute(
+                        "SELECT * FROM runner_results WHERE result_version_id = ? ORDER BY horse_number",
+                        (version["id"],),
+                    ).fetchall(),
+                )
+            settlements = connection.execute(
+                """
+                SELECT settlement.*, bet.decision_type
+                FROM settlements AS settlement
+                JOIN bets AS bet ON bet.id = settlement.bet_id
+                WHERE bet.race_id = ? AND bet.status = 'active' AND settlement.status = 'active'
+                ORDER BY settlement.id
+                """,
+                (race_id,),
+            ).fetchall()
+        return bets, result, settlements
