@@ -33,12 +33,12 @@ export default function JraRaceAcquisitionPanel() {
   };
 
   return <section className="panel analysis-panel" aria-labelledby="jra-acquisition-heading">
-    <div className="panel-heading"><div><span className="section-number">02</span><h2 id="jra-acquisition-heading">JRA出馬表取得</h2></div><span className="local-badge">利用者操作のみ</span></div>
+    <div className="panel-heading"><div><span className="section-number">02</span><h2 id="jra-acquisition-heading">JRAレース情報取得</h2></div><span className="local-badge">利用者操作のみ</span></div>
     <div className="import-form">
-      <label htmlFor="jra-race-card-url">JRA出馬表URL</label>
-      <input id="jra-race-card-url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessD.html?..." />
+      <label htmlFor="jra-race-card-url">JRAレースページURL</label>
+      <input id="jra-race-card-url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessD.html?... または accessS.html?..." />
       <button type="button" disabled={!url || state === "loading"} onClick={() => void acquire()}>{state === "loading" ? "取得・検証中…" : "取得して登録"}</button>
-      <p>ログイン不要のJRA出馬表だけを直列取得します。停止時はCSV取込を使用してください。</p>
+      <p>開催前は出馬表、過去レースはレース結果ページから基本情報と出走馬を直列取得します。停止時はCSV取込を使用してください。</p>
       {state === "error" && <div className="import-error" role="alert"><strong>{message}</strong><p>CSV取込は恒久的な代替手段です。</p></div>}
     </div>
     {card && <div className="analysis-result">

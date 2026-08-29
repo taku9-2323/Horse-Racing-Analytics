@@ -17,11 +17,11 @@ from pydantic import BaseModel
 
 ALLOWED_HOST = "www.jra.go.jp"
 ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
-PARSER_VERSION = "jra-race-card/2"
+PARSER_VERSION = "jra-race-entry/1"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 SOURCE_RACE_ID_PATTERN = re.compile(
-    r"pw01dde(?P<view>01|10)(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
+    r"pw01(?P<format>dde01|dde10|sde01|sde10)(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
     r"(?P<day>\d{2})(?P<race>\d{2})(?P<date>\d{8})/[A-Za-z0-9]{2}",
 )
 RACECOURSES_BY_CODE = {
@@ -112,6 +112,7 @@ class Element:
     attrs: dict[str, str]
     children: list["Element"] = field(default_factory=list)
     fragments: list[str] = field(default_factory=list)
+    closed: bool = False
 
     def text(self) -> str:
         return " ".join(" ".join([*self.fragments, *(child.text() for child in self.children)]).split())
@@ -158,6 +159,7 @@ class _TreeParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         for index in range(len(self._stack) - 1, 0, -1):
             if self._stack[index].tag == tag:
+                self._stack[index].closed = True
                 del self._stack[index:]
                 return
 
@@ -192,13 +194,15 @@ class JraRaceCardAcquirer:
     def __init__(self, fetcher: Callable[[str], FetchResponse], cache_directory: Path) -> None:
         self._fetcher = fetcher
         self._cache_directory = cache_directory
+        self._memory_cache: dict[str, tuple[datetime, bytes]] = {}
 
     def acquire(self, url: str, received_at: datetime) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], bytes]:
         validate_race_card_url(url)
+        resource = str(parse_source_race_identity(url)["resource"])
         self._purge_expired_cache(received_at)
-        cached = self._load_recent_cache(url, received_at)
+        cached = self._load_recent_cache(url, resource, received_at)
         if cached is not None:
-            return self._normalize(url, cached, "text/html", received_at)
+            return self._normalize(url, resource, cached, "text/html", received_at, cache_response=False)
         robots = self._fetcher(ROBOTS_URL)
         if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
             raise audited_error(
@@ -217,15 +221,25 @@ class JraRaceCardAcquirer:
                 "unexpected_response", "想定外の応答です。CSV取込を使用してください。",
                 503, url, response.body, received_at,
             )
-        return self._normalize(url, response.body, content_type, received_at)
+        return self._normalize(url, resource, response.body, content_type, received_at)
 
     def _normalize(
-        self, url: str, body: bytes, content_type: str, received_at: datetime,
+        self, url: str, resource: str, body: bytes, content_type: str, received_at: datetime,
+        *, cache_response: bool = True,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], bytes]:
         digest = sha256(body).hexdigest()
         received_utc = received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         try:
             race, runners, source_updated_at = parse_race_card(body, content_type, url)
+            source_identity = parse_source_race_identity(url)
+            if (resource == "race_card"
+                    and str(source_identity["race_date"])
+                    < received_at.astimezone(timezone(timedelta(hours=9))).date().isoformat()):
+                raise AcquisitionError(
+                    "past_race_requires_result",
+                    "過去レースはJRAのレース結果ページ（accessS.html）から取得してください。",
+                    422,
+                )
         except AcquisitionError as error:
             error.observation = {
                 "url": url, "received_at": received_utc, "parser_version": PARSER_VERSION,
@@ -238,10 +252,14 @@ class JraRaceCardAcquirer:
             "parser_version": PARSER_VERSION, "response_sha256": digest,
             "validation_status": "valid",
         }
-        self._cache(url, body, digest, received_at)
+        if cache_response:
+            self._cache(url, resource, body, digest, received_at)
         return race, runners, observation, body
 
-    def _cache(self, url: str, body: bytes, digest: str, now: datetime) -> None:
+    def _cache(self, url: str, resource: str, body: bytes, digest: str, now: datetime) -> None:
+        if resource == "result":
+            self._memory_cache[url] = (now, body)
+            return
         self._cache_directory.mkdir(parents=True, exist_ok=True)
         url_digest = sha256(url.encode("utf-8")).hexdigest()
         path = self._cache_directory / f"{url_digest}-{digest}.html"
@@ -250,6 +268,10 @@ class JraRaceCardAcquirer:
             os.utime(path, (now.timestamp(), now.timestamp()))
 
     def _purge_expired_cache(self, now: datetime) -> None:
+        memory_cutoff = now - timedelta(minutes=15)
+        self._memory_cache = {
+            url: cached for url, cached in self._memory_cache.items() if cached[0] >= memory_cutoff
+        }
         if not self._cache_directory.is_dir():
             return
         cutoff = now.timestamp() - timedelta(days=7).total_seconds()
@@ -257,7 +279,12 @@ class JraRaceCardAcquirer:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
 
-    def _load_recent_cache(self, url: str, now: datetime) -> bytes | None:
+    def _load_recent_cache(self, url: str, resource: str, now: datetime) -> bytes | None:
+        if resource == "result":
+            cached = self._memory_cache.get(url)
+            if cached is None or now - cached[0] > timedelta(minutes=15):
+                return None
+            return cached[1]
         if not self._cache_directory.is_dir():
             return None
         url_digest = sha256(url.encode("utf-8")).hexdigest()
@@ -275,12 +302,18 @@ def validate_race_card_url(url: str) -> None:
     parsed = urlparse(url)
     query = parse_qs(parsed.query, strict_parsing=True)
     cname = query.get("CNAME", [])
-    valid_cname = len(cname) == 1 and SOURCE_RACE_ID_PATTERN.fullmatch(cname[0])
+    valid_cname = SOURCE_RACE_ID_PATTERN.fullmatch(cname[0]) if len(cname) == 1 else None
+    expected_path = None
+    if valid_cname is not None:
+        expected_path = (
+            "/JRADB/accessS.html"
+            if valid_cname.group("format").startswith("s") else "/JRADB/accessD.html"
+        )
     if (parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST or parsed.port not in {None, 443}
             or parsed.username is not None or parsed.password is not None
-            or parsed.path != "/JRADB/accessD.html" or parsed.fragment or set(query) != {"CNAME"}
+            or parsed.path != expected_path or parsed.fragment or set(query) != {"CNAME"}
             or valid_cname is None):
-        raise AcquisitionError("url_not_allowed", "許可されたJRA出馬表URLを指定してください。", 422)
+        raise AcquisitionError("url_not_allowed", "許可されたJRAレースページURLを指定してください。", 422)
 
 
 def same_allowed_race_card_url(left: str, right: str) -> bool:
@@ -334,14 +367,20 @@ def parse_race_card(
     try:
         text = body.decode(charset)
     except (LookupError, UnicodeDecodeError) as error:
-        raise AcquisitionError("race_card_validation_failed", "出馬表を検証できませんでした。", 422) from error
+        raise AcquisitionError("race_card_validation_failed", "JRAレースページを検証できませんでした。", 422) from error
     parser = _TreeParser()
     parser.feed(text)
     table = parser.root.find(element_id="syutsuba")
+    result_page = table is None
+    if result_page:
+        result_root = parser.root.find(element_id="race_result")
+        table = result_root.find(tag="table") if result_root else None
     header = table.find(class_name="race_header") if table else None
     date_element = table.find(class_name="date") if table else None
     rows = table.find_all(tag="tr") if table else []
     try:
+        if table is None or not table.closed:
+            raise ValueError("incomplete_table")
         date_text = required_text(date_element)
         header_text = required_text(header)
         date_match = required_match(r"(\d{4})年(\d{1,2})月(\d{1,2})日.*?\d+回(.+?)\d+日", date_text)
@@ -350,7 +389,9 @@ def parse_race_card(
         race_number = int(required_match(r"(\d+)レース", race_number_image.attrs.get("alt", ""))[0])
         start = required_match(r"発走時刻[：:]\s*(\d{1,2})時(\d{2})分", header_text)
         course = required_match(r"コース[：:]\s*([\d,]+)メートル（(芝|ダート)[^）]*）", header_text)
-        declared_field_size = int(required_match(r"(\d+)頭", header_text)[0])
+        declared_field_size = (
+            None if result_page else int(required_match(r"(\d+)頭", header_text)[0])
+        )
         header_element = require_element(header)
         going_node = header_element.find(class_name="turf") or header_element.find(class_name="durt")
         going_text = required_text(going_node.find(class_name="txt") if going_node else None)
@@ -359,13 +400,18 @@ def parse_race_card(
         local_start = datetime.fromisoformat(f"{race_date}T{start_time}:00").replace(
             tzinfo=timezone(timedelta(hours=9)),
         )
-        runners = [parse_runner(row) for row in rows if row.find(class_name="num") is not None]
+        runners = [
+            parse_runner(row) for row in rows
+            if row.find(tag="td", class_name="num") is not None
+        ]
         horse_numbers = [runner["horse_number"] for runner in runners]
         identity = parse_source_race_identity(source_url)
-        if (identity["race_date"] != race_date or identity["race_number"] != race_number
+        if ((identity["resource"] == "result") != result_page
+                or identity["race_date"] != race_date or identity["race_number"] != race_number
                 or identity["racecourse"] != date_match[3]):
             raise ValueError("race_identity")
-        if (declared_field_size != len(runners) or not 1 <= race_number <= 12
+        if ((declared_field_size is not None and declared_field_size != len(runners))
+                or not 1 <= race_number <= 12
                 or not 1 <= len(runners) <= 18
                 or len(horse_numbers) != len(set(horse_numbers))
                 or set(horse_numbers) != set(range(1, len(runners) + 1))):
@@ -387,24 +433,30 @@ def parse_race_card(
             source_updated_at = parsed_update.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         return race, runners, source_updated_at
     except (AttributeError, IndexError, TypeError, ValueError) as error:
-        raise AcquisitionError("race_card_validation_failed", "出馬表を検証できませんでした。", 422) from error
+        raise AcquisitionError("race_card_validation_failed", "JRAレースページを検証できませんでした。", 422) from error
 
 
 def parse_runner(row: Element) -> dict[str, Any]:
     gate_cell = require_element(row.find(class_name="waku"))
     gate_image = require_element(gate_cell.find(tag="img"))
     age_text = required_text(row.find(class_name="age"))
-    age = required_match(r"(牡|牝|セン)(\d+)", age_text)
-    status_text = required_text(row.find(class_name="status"), optional=True)
+    age = required_match(r"(牡|牝|セン|騸)(\d+)", age_text)
+    status_text = " ".join(filter(None, (
+        required_text(row.find(class_name="status"), optional=True),
+        required_text(row.find(tag="td", class_name="place"), optional=True),
+    )))
     status = "取消" if "取消" in status_text else "除外" if "除外" in status_text else "出走"
-    gate = int(required_match(r"枠(\d+)番", gate_image.attrs.get("alt", ""))[0])
+    gate = int(required_match(r"枠(\d+)(?:番|\D|$)", gate_image.attrs.get("alt", ""))[0])
     runner_age = int(age[1])
-    assigned_weight = float(required_match(r"([\d.]+)\s*kg", required_text(row.find(class_name="weight")), re.I)[0])
+    assigned_weight = float(required_match(
+        r"([\d.]+)(?:\s*kg)?", required_text(row.find(class_name="weight")), re.I,
+    )[0])
+    horse_name_element = row.find(class_name="name") or row.find(tag="td", class_name="horse")
     runner = {
         "gate": gate,
         "horse_number": int(required_text(row.find(class_name="num"))),
-        "horse_name": required_text(row.find(class_name="name")),
-        "age": runner_age, "sex": age[0],
+        "horse_name": required_text(horse_name_element),
+        "age": runner_age, "sex": "セン" if age[0] == "騸" else age[0],
         "assigned_weight": assigned_weight,
         "status": status,
     }
@@ -428,6 +480,7 @@ def parse_source_race_identity(url: str) -> dict[str, str | int]:
             f"JRA-{date_value}-{match.group('course_code')}-"
             f"{match.group('meeting')}-{match.group('day')}-{int(match.group('race')):02d}"
         ),
+        "resource": "result" if match.group("format").startswith("s") else "race_card",
         "racecourse": racecourse,
         "race_number": int(match.group("race")),
         "race_date": f"{date_value[:4]}-{date_value[4:6]}-{date_value[6:]}",
