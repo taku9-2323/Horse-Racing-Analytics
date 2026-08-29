@@ -9,6 +9,7 @@ It does not place bets, scrape netkeiba, access authenticated JRA pages, crawl a
 ## Domain glossary
 
 - **Race**: A contest identified independently of any data provider. It records organizer, country, racecourse, local start time, UTC start time, surface, distance, going, and field size.
+- **JRA race registration**: The formal creation of a Race and its Runners from a validated JRA race-card version together with a validated JRA odds snapshot. It preserves the card and odds observations as the provider evidence for that Race.
 - **Runner**: A horse entered in a race, including gate, horse number, age, sex, assigned weight, and status.
 - **Odds snapshot**: The win and place odds observed at one recorded time. Place odds are a lower/upper range.
 - **Source observation**: An immutable, versioned record of facts obtained from one source response, identified by source URL, receipt time, parser version, response hash, and validation outcome. A later correction creates another observation rather than overwriting it.

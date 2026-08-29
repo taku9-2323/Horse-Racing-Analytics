@@ -41,7 +41,7 @@ class SnapshotRunner(BaseModel):
 class OddsSnapshot(BaseModel):
     id: int
     race_id: int
-    observed_at: str
+    observed_at: str | None
     received_at: str
     source: str
     runners: list[SnapshotRunner]
@@ -90,7 +90,8 @@ class PredictionRun(BaseModel):
 def snapshot_response(snapshot: Any, runners: list[Any]) -> OddsSnapshot:
     return OddsSnapshot(
         id=int(snapshot["id"]), race_id=int(snapshot["race_id"]),
-        observed_at=str(snapshot["observed_at"]), received_at=str(snapshot["received_at"]),
+        observed_at=None if snapshot["observed_at"] is None else str(snapshot["observed_at"]),
+        received_at=str(snapshot["received_at"]),
         source=str(snapshot["source"]),
         runners=[SnapshotRunner(
             horse_number=int(runner["horse_number"]), win_odds=float(runner["win_odds"]),

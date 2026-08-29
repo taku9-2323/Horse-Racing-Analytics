@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.robotparser import RobotFileParser
@@ -23,6 +23,10 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 SOURCE_RACE_ID_PATTERN = re.compile(
     r"pw01(?P<format>dde01|dde10|sde01|sde10)(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
     r"(?P<day>\d{2})(?P<race>\d{2})(?P<date>\d{8})/[A-Za-z0-9]{2}",
+)
+ODDS_CNAME_PATTERN = re.compile(
+    r"pw151ouS3(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
+    r"(?P<day>\d{2})(?P<race>\d{2})(?P<date>\d{8})Z/[A-F0-9]{2}",
 )
 RACECOURSES_BY_CODE = {
     "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
@@ -97,6 +101,26 @@ class RaceCardRequest(BaseModel):
     url: str
 
 
+class OddsPageRequest(BaseModel):
+    url: str
+
+
+class AcquiredOddsRunner(BaseModel):
+    horse_number: int
+    win_odds: float
+    place_odds_min: float
+    place_odds_max: float
+
+
+class AcquiredOddsSnapshot(BaseModel):
+    race_id: int
+    snapshot_id: int
+    observed_at: str | None
+    received_at: str
+    runners: list[AcquiredOddsRunner]
+    source: SourceObservation
+
+
 class AcquisitionObservation(BaseModel):
     url: str
     received_at: str
@@ -169,7 +193,14 @@ class _TreeParser(HTMLParser):
 
 
 def default_fetcher(url: str) -> FetchResponse:
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain;q=0.9"})
+    parsed = urlparse(url)
+    post_data = None
+    request_url = url
+    if parsed.path == "/JRADB/accessO.html" and parsed.query:
+        cname = parse_qs(parsed.query).get("CNAME", [""])[0]
+        post_data = urlencode({"cname": cname}).encode("ascii")
+        request_url = f"https://{ALLOWED_HOST}/JRADB/accessO.html"
+    request = Request(request_url, data=post_data, headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain;q=0.9"})
     try:
         with urlopen(request, timeout=10) as response:  # noqa: S310 - caller only supplies validated fixed JRA URLs
             body = response.read(MAX_RESPONSE_BYTES + 1)
@@ -296,6 +327,43 @@ class JraRaceCardAcquirer:
         if not candidates or candidates[0].stat().st_mtime < minimum_mtime:
             return None
         return candidates[0].read_bytes()
+
+
+class JraOddsAcquirer:
+    def __init__(self, fetcher: Callable[[str], FetchResponse]) -> None:
+        self._fetcher = fetcher
+        self._memory_cache: dict[str, tuple[datetime, bytes]] = {}
+
+    def acquire(self, url: str, received_at: datetime) -> tuple[list[dict[str, float | int]], dict[str, Any]]:
+        validate_odds_url(url)
+        cached = self._memory_cache.get(url)
+        if cached is not None and received_at - cached[0] > timedelta(minutes=15):
+            del self._memory_cache[url]
+            cached = None
+        if cached is not None:
+            body = cached[1]
+            response_received_at = cached[0]
+        else:
+            robots = self._fetcher(ROBOTS_URL)
+            if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
+                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, robots.body, received_at)
+            response = self._fetcher(url)
+            allowed_final_urls = {url, f"https://{ALLOWED_HOST}/JRADB/accessO.html"}
+            if response.status != 200 or response.final_url not in allowed_final_urls or not response.headers.get("content-type", "").lower().startswith("text/html"):
+                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, response.body, received_at)
+            body = response.body
+            self._memory_cache[url] = (received_at, body)
+            response_received_at = received_at
+        digest = sha256(body).hexdigest()
+        try:
+            odds = parse_jra_odds_page(body, "text/html; charset=utf-8")
+            validate_odds_page_identity(body, "text/html; charset=utf-8", url)
+            source_updated_at = parse_jra_odds_update_time(body, "text/html; charset=utf-8", url)
+        except AcquisitionError as error:
+            error.observation = {"url": url, "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "parser_version": "jra-odds/1", "response_sha256": digest, "validation_status": "invalid", "error_code": error.code}
+            raise
+        identity = parse_odds_source_identity(url)
+        return odds, {"url": url, "source_race_id": identity["source_race_id"], "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "source_updated_at": source_updated_at, "parser_version": "jra-odds/1", "response_sha256": digest, "validation_status": "valid"}
 
 
 def validate_race_card_url(url: str) -> None:
@@ -485,6 +553,92 @@ def parse_source_race_identity(url: str) -> dict[str, str | int]:
         "race_number": int(match.group("race")),
         "race_date": f"{date_value[:4]}-{date_value[4:6]}-{date_value[6:]}",
     }
+
+
+def validate_odds_url(url: str) -> None:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query, strict_parsing=True)
+    cname = query.get("CNAME", [])
+    if (parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST or parsed.port not in {None, 443}
+            or parsed.path != "/JRADB/accessO.html" or parsed.fragment or set(query) != {"CNAME"}
+            or len(cname) != 1 or ODDS_CNAME_PATTERN.fullmatch(cname[0]) is None):
+        raise AcquisitionError("url_not_allowed", "許可されたJRAオッズURLを指定してください。", 422)
+
+
+def parse_odds_source_identity(url: str) -> dict[str, str | int]:
+    cname = parse_qs(urlparse(url).query)["CNAME"][0]
+    match = ODDS_CNAME_PATTERN.fullmatch(cname)
+    if match is None:
+        raise ValueError("odds_identity")
+    date_value = match.group("date")
+    return {"source_race_id": f"JRA-{date_value}-{match.group('course_code')}-{match.group('meeting')}-{match.group('day')}-{int(match.group('race')):02d}"}
+
+
+def parse_jra_odds_page(body: bytes, content_type: str) -> list[dict[str, float | int]]:
+    charset_match = re.search(r"charset=([\w-]+)", content_type)
+    try:
+        text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+        parser = _TreeParser()
+        parser.feed(text)
+        table = next(
+            item for item in parser.root.find_all(tag="table")
+            if "単勝・複勝オッズ（馬番順）" in item.text() and item.closed
+        )
+        rows = [item for item in table.find_all(tag="tr") if len(item.find_all(tag="td")) >= 5]
+        odds: list[dict[str, float | int]] = []
+        for row in rows:
+            cells = row.find_all(tag="td")
+            offset = 1 if required_text(cells[0]).startswith("枠") else 0
+            horse_number = int(required_text(cells[offset]))
+            win_odds = float(required_text(cells[offset + 2]))
+            place_match = re.fullmatch(r"([\d.]+)\s*-\s*([\d.]+)", required_text(cells[offset + 3]))
+            if place_match is None:
+                raise ValueError("place_range")
+            minimum, maximum = float(place_match.group(1)), float(place_match.group(2))
+            if not (0 < win_odds <= 100000 and 0 < minimum <= maximum <= 100000):
+                raise ValueError("odds_bounds")
+            odds.append({"horse_number": horse_number, "win_odds": win_odds,
+                         "place_odds_min": minimum, "place_odds_max": maximum})
+        numbers = {int(item["horse_number"]) for item in odds}
+        if not odds or len(numbers) != len(odds) or numbers != set(range(1, len(odds) + 1)):
+            raise ValueError("odds_runner_set")
+        return odds
+    except (AttributeError, IndexError, LookupError, TypeError, UnicodeDecodeError, ValueError) as error:
+        raise AcquisitionError("odds_validation_failed", "JRAオッズページを検証できませんでした。", 422) from error
+
+
+def parse_jra_odds_update_time(body: bytes, content_type: str, source_url: str) -> str | None:
+    charset_match = re.search(r"charset=([\w-]+)", content_type)
+    text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+    match = re.search(r"(?:オッズ)?更新(?:時刻|日時)?\s*[：:]\s*(\d{1,2})時(\d{2})分", text)
+    if match is None:
+        return None
+    cname = parse_qs(urlparse(source_url).query)["CNAME"][0]
+    identity = ODDS_CNAME_PATTERN.fullmatch(cname)
+    if identity is None:
+        raise AcquisitionError("odds_validation_failed", "JRAオッズページを検証できませんでした。", 422)
+    date_value = identity.group("date")
+    local = datetime(int(date_value[:4]), int(date_value[4:6]), int(date_value[6:]),
+                     int(match.group(1)), int(match.group(2)), tzinfo=timezone(timedelta(hours=9)))
+    return local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def validate_odds_page_identity(body: bytes, content_type: str, source_url: str) -> None:
+    charset_match = re.search(r"charset=([\w-]+)", content_type)
+    text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+    page = re.search(
+        r"(\d{4})年(\d{1,2})月(\d{1,2})日.*?(\d+)回(札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉|架空)(\d+)日.*?(\d+)レース",
+        text, re.S,
+    )
+    cname = parse_qs(urlparse(source_url).query)["CNAME"][0]
+    expected = ODDS_CNAME_PATTERN.fullmatch(cname)
+    if page is None or expected is None:
+        raise AcquisitionError("odds_validation_failed", "JRAオッズページを検証できませんでした。", 422)
+    date_value = f"{int(page.group(1)):04d}{int(page.group(2)):02d}{int(page.group(3)):02d}"
+    if (date_value != expected.group("date") or int(page.group(4)) != int(expected.group("meeting"))
+            or page.group(5) != RACECOURSES_BY_CODE.get(expected.group("course_code"))
+            or int(page.group(6)) != int(expected.group("day")) or int(page.group(7)) != int(expected.group("race"))):
+        raise AcquisitionError("odds_race_mismatch", "JRAオッズページが選択したレースと一致しません。", 422)
 
 
 def required_text(element: Element | None, optional: bool = False) -> str:

@@ -30,8 +30,9 @@ from app.predictions import (
     prediction_response, snapshot_response, utc_iso,
 )
 from app.jra_acquisition import (
-    AcquiredRaceCard, AcquiredRaceSummary, AcquiredRunner, AcquisitionError, AcquisitionObservation,
-    FetchResponse, JraRaceCardAcquirer, RaceCardRequest, SourceObservation, default_fetcher,
+    AcquiredOddsRunner, AcquiredOddsSnapshot, AcquiredRaceCard, AcquiredRaceSummary, AcquiredRunner, AcquisitionError,
+    AcquisitionObservation, FetchResponse, JraOddsAcquirer, JraRaceCardAcquirer, OddsPageRequest,
+    RaceCardRequest, SourceObservation, default_fetcher,
 )
 
 
@@ -94,6 +95,7 @@ def create_app(
     race_card_acquirer = JraRaceCardAcquirer(
         jra_fetcher or default_fetcher, resolved_database_path.parent / "jra-html-cache",
     )
+    odds_acquirer = JraOddsAcquirer(jra_fetcher or default_fetcher)
 
     def acquired_card_response(card: sqlite3.Row, runners: list[sqlite3.Row]) -> AcquiredRaceCard:
         return AcquiredRaceCard(
@@ -182,6 +184,32 @@ def create_app(
     @app.get("/api/acquisition/jra/race-cards", response_model=list[AcquiredRaceCard])
     def list_jra_race_cards() -> list[AcquiredRaceCard]:
         return [acquired_card_response(*stored) for stored in database.list_acquired_race_cards()]
+
+    @app.post("/api/acquisition/jra/race-cards/{card_id}/odds", response_model=AcquiredOddsSnapshot, status_code=201)
+    def acquire_jra_odds(card_id: int, request: OddsPageRequest) -> AcquiredOddsSnapshot:
+        try:
+            odds, observation = odds_acquirer.acquire(request.url, current_time())
+            race_id, snapshot_id = database.register_jra_race_with_odds(card_id, odds, observation)
+        except AcquisitionError as error:
+            if error.observation is not None:
+                database.save_acquisition_failure(error.observation)
+            raise HTTPException(status_code=error.status_code, detail={"code": error.code, "message": error.message}) from error
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "JRAレースカードが見つかりません。"}) from error
+        except RaceImportConflictError as error:
+            raise HTTPException(status_code=409, detail={"code": "race_import_conflict", "message": "同じレースに異なる登録内容があります。"}) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail={"code": str(error), "message": "レースカードと全出走馬のオッズが一致しません。"}) from error
+        return AcquiredOddsSnapshot(
+            race_id=race_id, snapshot_id=snapshot_id, observed_at=observation["source_updated_at"],
+            received_at=observation["received_at"],
+            runners=[AcquiredOddsRunner(
+                horse_number=int(runner["horse_number"]), win_odds=float(runner["win_odds"]),
+                place_odds_min=float(runner["place_odds_min"]),
+                place_odds_max=float(runner["place_odds_max"]),
+            ) for runner in odds],
+            source=SourceObservation(**observation),
+        )
 
     @app.get("/api/acquisition/jra/failures", response_model=list[AcquisitionObservation])
     def list_jra_acquisition_failures() -> list[AcquisitionObservation]:

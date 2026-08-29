@@ -83,7 +83,7 @@ class SqliteDatabase:
                 CREATE TABLE IF NOT EXISTS odds_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     race_id INTEGER NOT NULL REFERENCES races(id),
-                    observed_at TEXT NOT NULL,
+                    observed_at TEXT,
                     received_at TEXT NOT NULL,
                     source TEXT NOT NULL
                 )
@@ -315,6 +315,42 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '8' WHERE key = 'schema_version'"
             )
+            observed_at_column = next(
+                row for row in connection.execute("PRAGMA table_info(odds_snapshots)").fetchall()
+                if row[1] == "observed_at"
+            )
+            if observed_at_column[3] == 1:
+                connection.execute(
+                    """CREATE TABLE odds_snapshots_v9 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        race_id INTEGER NOT NULL REFERENCES races(id),
+                        observed_at TEXT, received_at TEXT NOT NULL, source TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    "INSERT INTO odds_snapshots_v9 (id,race_id,observed_at,received_at,source) SELECT id,race_id,observed_at,received_at,source FROM odds_snapshots"
+                )
+                connection.execute("DROP TABLE odds_snapshots")
+                connection.execute("ALTER TABLE odds_snapshots_v9 RENAME TO odds_snapshots")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS jra_race_registrations (
+                    card_id INTEGER PRIMARY KEY REFERENCES acquired_race_cards(id),
+                    race_id INTEGER NOT NULL REFERENCES races(id)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS jra_odds_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id INTEGER NOT NULL UNIQUE REFERENCES odds_snapshots(id),
+                    source_url TEXT NOT NULL, source_race_id TEXT NOT NULL,
+                    received_at TEXT NOT NULL, source_updated_at TEXT,
+                    parser_version TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                    validation_status TEXT NOT NULL CHECK (validation_status = 'valid')
+                )"""
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '9' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -322,8 +358,77 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("8",):
+        if row != ("9",):
             raise RuntimeError("SQLite schema is not ready")
+
+    def register_jra_race_with_odds(
+        self, card_id: int, odds: Sequence[dict[str, Any]], observation: dict[str, Any],
+    ) -> tuple[int, int]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            card = connection.execute("SELECT * FROM acquired_race_cards WHERE id = ?", (card_id,)).fetchone()
+            if card is None:
+                raise LookupError("race_card_not_found")
+            card_runners = connection.execute(
+                "SELECT * FROM acquired_race_card_runners WHERE card_id = ? ORDER BY horse_number", (card_id,),
+            ).fetchall()
+            expected = {int(row["horse_number"]) for row in card_runners}
+            supplied = {int(row["horse_number"]) for row in odds}
+            if expected != supplied or len(supplied) != len(odds):
+                raise ValueError("snapshot_runner_mismatch")
+            if str(card["source_race_id"]) != str(observation["source_race_id"]):
+                raise ValueError("odds_race_mismatch")
+            registered = connection.execute(
+                "SELECT race_id FROM jra_race_registrations WHERE card_id = ?", (card_id,),
+            ).fetchone()
+            if registered is None:
+                existing = connection.execute(
+                    "SELECT id FROM races WHERE organizer=? AND country=? AND racecourse=? AND race_date=? AND race_number=?",
+                    (card["organizer"], card["country"], card["racecourse"], card["race_date"], card["race_number"]),
+                ).fetchone()
+                if existing is not None:
+                    raise RaceImportConflictError
+                cursor = connection.execute(
+                    """INSERT INTO races (organizer,country,racecourse,race_date,race_number,start_time,timezone,
+                    start_utc,surface,distance_m,going,field_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    tuple(card[key] for key in ("organizer","country","racecourse","race_date","race_number","start_time","timezone","start_utc","surface","distance_m","going","field_size")),
+                )
+                race_id = cursor.lastrowid
+                if race_id is None:
+                    raise RuntimeError("Race could not be saved")
+                odds_by_number = {int(row["horse_number"]): row for row in odds}
+                inverse_total = sum(1 / float(row["win_odds"]) for row in odds)
+                connection.executemany(
+                    """INSERT INTO runners (race_id,gate,horse_number,horse_name,age,sex,assigned_weight,status,
+                    win_odds,place_odds_min,place_odds_max,raw_inverse_win_odds,normalized_win_market_share)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [(race_id, row["gate"], row["horse_number"], row["horse_name"], row["age"], row["sex"],
+                      row["assigned_weight"], row["status"], odds_by_number[int(row["horse_number"])]["win_odds"],
+                      odds_by_number[int(row["horse_number"])]["place_odds_min"], odds_by_number[int(row["horse_number"])]["place_odds_max"],
+                      1 / float(odds_by_number[int(row["horse_number"])]["win_odds"]),
+                      (1 / float(odds_by_number[int(row["horse_number"])]["win_odds"])) / inverse_total) for row in card_runners],
+                )
+                connection.execute("INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)", (card_id, race_id))
+            else:
+                race_id = int(registered["race_id"])
+            snapshot = connection.execute(
+                "INSERT INTO odds_snapshots (race_id,observed_at,received_at,source) VALUES (?,?,?,'jra_web')",
+                (race_id, observation["source_updated_at"], observation["received_at"]),
+            )
+            snapshot_id = snapshot.lastrowid
+            if snapshot_id is None:
+                raise RuntimeError("Snapshot could not be saved")
+            connection.executemany(
+                "INSERT INTO odds_snapshot_runners (snapshot_id,horse_number,win_odds,place_odds_min,place_odds_max) VALUES (?,?,?,?,?)",
+                [(snapshot_id, row["horse_number"], row["win_odds"], row["place_odds_min"], row["place_odds_max"]) for row in odds],
+            )
+            connection.execute(
+                """INSERT INTO jra_odds_observations (snapshot_id,source_url,source_race_id,received_at,source_updated_at,
+                parser_version,response_sha256,validation_status) VALUES (?,?,?,?,?,?,?,?)""",
+                (snapshot_id, observation["url"], observation["source_race_id"], observation["received_at"],
+                 observation["source_updated_at"], observation["parser_version"], observation["response_sha256"], observation["validation_status"]),
+            )
+            return int(race_id), int(snapshot_id)
 
     def save_acquired_race_card(
         self, race: dict[str, Any], runners: Sequence[dict[str, Any]], observation: dict[str, Any],

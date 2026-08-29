@@ -9,7 +9,7 @@ type RunnerOdds = {
 
 type OddsSnapshot = {
   id: number;
-  observed_at: string;
+  observed_at: string | null;
   received_at: string;
   runners: RunnerOdds[];
 };
@@ -143,7 +143,7 @@ export default function PredictionPanel({ raceId, runners }: Props) {
           {snapshots.length === 0 && <p className="empty-note">まだ保存されていません。</p>}
           {snapshots.map((snapshot) => (
             <article className="workflow-card" key={snapshot.id}>
-              <strong>時点 #{snapshot.id} / 観測 {snapshot.observed_at}</strong>
+              <strong>時点 #{snapshot.id} / 観測 {snapshot.observed_at ?? "不明"}</strong>
               <span>受付 {snapshot.received_at}</span>
               <span>{snapshot.runners.map((runner) => `${runner.horse_number}番 単勝${runner.win_odds} / 複勝${runner.place_odds_min}–${runner.place_odds_max}`).join(" / ")}</span>
               <button type="button" onClick={() => void freeze(snapshot.id)}>この時点の予測を固定</button>

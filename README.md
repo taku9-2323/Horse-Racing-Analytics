@@ -13,10 +13,11 @@ JRAの単勝・複勝を対象に、レース前の市場情報と将来の独�
 - [初期予測ルールの文献調査](docs/research/initial-prediction-rules.md)
 - [複勝オッズに関するADR](docs/adr/0001-place-odds-are-not-probabilities.md)
 - [JRA公開Web取得に関するADR](docs/adr/0002-user-initiated-jra-public-web-acquisition.md)
+- [JRA正式レース登録に関するADR](docs/adr/0003-jra-race-registration-requires-odds.md)
 
 ## Current status
 
-チケット11「JRA公開ページからレースを取得する」まで実装しました。画面へログイン不要のJRA出馬表URLを貼り付けると、許可URL、robots、HTTP応答、レース識別子、頭数、馬番号集合を検証し、出馬表取得版と由来を保存します。取得停止時は既存のCSV取込を使用します。次のfrontierはチケット12「JRA公開ページからオッズを取得する」です。
+チケット12「JRA公開ページからオッズを取得する」まで実装しました。JRAレースカード取得後に単勝・複勝オッズURLを指定すると、固定URL、robots、HTTP応答、馬番集合、単勝、複勝範囲を検証し、正式レースと新しいオッズ時点、取得元の監査情報を保存します。取得停止時は既存のCSV取込を使用します。次のfrontierはチケット13「JRA公開ページから結果・払戻を取得する」です。
 
 出馬表URLは通常表示の `pw01dde01...` と詳細表示の `pw01dde10...` に対応します。ただしレース日が過去なら登録せず、レース結果URLの指定を求めます。
 
