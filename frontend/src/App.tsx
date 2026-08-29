@@ -3,6 +3,7 @@ import PredictionPanel from "./PredictionPanel";
 import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
+import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -159,10 +160,12 @@ function App() {
         )}
       </section>
 
+      <JraRaceAcquisitionPanel />
+
       <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
         <div className="panel-heading">
           <div>
-            <span className="section-number">02</span>
+            <span className="section-number">03</span>
             <h2 id="race-analysis-heading">1レース市場分析</h2>
           </div>
           <span className="local-badge">UTF-8 CSV</span>

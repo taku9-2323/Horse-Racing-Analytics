@@ -138,7 +138,7 @@ def test_json_and_csv_exports_include_user_data_and_audit_history(tmp_path: Path
     assert json_export.headers["content-type"] == "application/json"
     assert "attachment;" in json_export.headers["content-disposition"]
     payload = json_export.json()
-    assert payload["schema_version"] == "6"
+    assert payload["schema_version"] == "7"
     assert payload["exported_at"] == "2026-08-28T12:34:56Z"
     assert payload["tables"]["races"][0]["id"] == race["race_id"]
     assert payload["tables"]["runners"][0]["horse_name"] == "アカツキ"

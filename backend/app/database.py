@@ -258,6 +258,48 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '6' WHERE key = 'schema_version'"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS acquired_race_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    organizer TEXT NOT NULL, country TEXT NOT NULL, racecourse TEXT NOT NULL,
+                    race_date TEXT NOT NULL, race_number INTEGER NOT NULL, start_time TEXT NOT NULL,
+                    timezone TEXT NOT NULL, start_utc TEXT NOT NULL, surface TEXT NOT NULL,
+                    distance_m INTEGER NOT NULL, going TEXT NOT NULL, field_size INTEGER NOT NULL,
+                    source_url TEXT NOT NULL, source_race_id TEXT NOT NULL,
+                    received_at TEXT NOT NULL, source_updated_at TEXT,
+                    parser_version TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                    validation_status TEXT NOT NULL CHECK (validation_status = 'valid'),
+                    version INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+                    supersedes_card_id INTEGER REFERENCES acquired_race_cards(id),
+                    UNIQUE (source_url, response_sha256)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS acquired_race_card_runners (
+                    card_id INTEGER NOT NULL REFERENCES acquired_race_cards(id),
+                    gate INTEGER NOT NULL, horse_number INTEGER NOT NULL, horse_name TEXT NOT NULL,
+                    age INTEGER NOT NULL, sex TEXT NOT NULL, assigned_weight REAL NOT NULL,
+                    status TEXT NOT NULL, PRIMARY KEY (card_id, horse_number)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS acquisition_failures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, source_url TEXT NOT NULL,
+                    received_at TEXT NOT NULL, parser_version TEXT NOT NULL,
+                    response_sha256 TEXT NOT NULL,
+                    validation_status TEXT NOT NULL CHECK (validation_status = 'invalid'),
+                    error_code TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '7' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -265,8 +307,80 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("6",):
+        if row != ("7",):
             raise RuntimeError("SQLite schema is not ready")
+
+    def save_acquired_race_card(
+        self, race: dict[str, Any], runners: Sequence[dict[str, Any]], observation: dict[str, Any],
+    ) -> int:
+        with sqlite3.connect(self._path) as connection:
+            existing = connection.execute(
+                "SELECT id FROM acquired_race_cards WHERE source_url = ? AND response_sha256 = ?",
+                (observation["url"], observation["response_sha256"]),
+            ).fetchone()
+            if existing is not None:
+                return int(existing[0])
+            previous = connection.execute(
+                "SELECT id, version FROM acquired_race_cards WHERE source_race_id = ? AND status = 'active'",
+                (observation["source_race_id"],),
+            ).fetchone()
+            version = 1 if previous is None else int(previous[1]) + 1
+            if previous is not None:
+                connection.execute(
+                    "UPDATE acquired_race_cards SET status = 'superseded' WHERE id = ?", (previous[0],),
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO acquired_race_cards (
+                    organizer, country, racecourse, race_date, race_number, start_time, timezone,
+                    start_utc, surface, distance_m, going, field_size, source_url, source_race_id, received_at,
+                    source_updated_at, parser_version, response_sha256, validation_status,
+                    version, status, supersedes_card_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                """,
+                tuple(race[key] for key in (
+                    "organizer", "country", "racecourse", "race_date", "race_number", "start_time",
+                    "timezone", "start_utc", "surface", "distance_m", "going", "field_size",
+                )) + tuple(observation[key] for key in (
+                    "url", "source_race_id", "received_at", "source_updated_at", "parser_version", "response_sha256", "validation_status",
+                )) + (version, None if previous is None else previous[0]),
+            )
+            card_id = cursor.lastrowid
+            if card_id is None:
+                raise RuntimeError("Race card could not be saved")
+            connection.executemany(
+                """INSERT INTO acquired_race_card_runners
+                (card_id, gate, horse_number, horse_name, age, sex, assigned_weight, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(card_id, *(runner[key] for key in (
+                    "gate", "horse_number", "horse_name", "age", "sex", "assigned_weight", "status",
+                ))) for runner in runners],
+            )
+            return int(card_id)
+
+    def list_acquired_race_cards(self) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            cards = connection.execute("SELECT * FROM acquired_race_cards ORDER BY id").fetchall()
+            return [(card, connection.execute(
+                "SELECT * FROM acquired_race_card_runners WHERE card_id = ? ORDER BY horse_number", (card["id"],)
+            ).fetchall()) for card in cards]
+
+    def save_acquisition_failure(self, observation: dict[str, Any]) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.execute(
+                """INSERT INTO acquisition_failures
+                (source_url, received_at, parser_version, response_sha256, validation_status, error_code)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                tuple(observation[key] for key in (
+                    "url", "received_at", "parser_version", "response_sha256", "validation_status", "error_code",
+                )),
+            )
+
+    def list_acquisition_failures(self) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute("SELECT * FROM acquisition_failures ORDER BY id").fetchall()
 
     def import_race(self, race: dict[str, Any], runners: Sequence[dict[str, Any]]) -> tuple[int, bool]:
         with sqlite3.connect(self._path) as connection:

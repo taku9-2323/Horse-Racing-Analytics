@@ -29,6 +29,10 @@ from app.predictions import (
     CorrectionRequest, FreezeRequest, OddsSnapshot, PredictionRun, SnapshotCreate,
     prediction_response, snapshot_response, utc_iso,
 )
+from app.jra_acquisition import (
+    AcquiredRaceCard, AcquiredRaceSummary, AcquiredRunner, AcquisitionError, AcquisitionObservation,
+    FetchResponse, JraRaceCardAcquirer, RaceCardRequest, SourceObservation, default_fetcher,
+)
 
 
 class ComponentHealth(BaseModel):
@@ -64,6 +68,7 @@ def create_app(
     database_path: Path | None = None,
     frontend_dist_path: Path | None = None,
     now_provider: Callable[[], datetime] | None = None,
+    jra_fetcher: Callable[[str], FetchResponse] | None = None,
 ) -> FastAPI:
     resolved_database_path = database_path or default_database_path()
     database = SqliteDatabase(resolved_database_path)
@@ -86,6 +91,29 @@ def create_app(
     )
     current_time = now_provider or (lambda: datetime.now(timezone.utc))
     data_maintenance = DataMaintenance(resolved_database_path, current_time)
+    race_card_acquirer = JraRaceCardAcquirer(
+        jra_fetcher or default_fetcher, resolved_database_path.parent / "jra-html-cache",
+    )
+
+    def acquired_card_response(card: sqlite3.Row, runners: list[sqlite3.Row]) -> AcquiredRaceCard:
+        return AcquiredRaceCard(
+            card_id=int(card["id"]),
+            version=int(card["version"]), status=str(card["status"]),
+            supersedes_card_id=None if card["supersedes_card_id"] is None else int(card["supersedes_card_id"]),
+            race=AcquiredRaceSummary(**{key: card[key] for key in (
+                "organizer", "country", "racecourse", "race_date", "race_number", "start_time",
+                "timezone", "start_utc", "surface", "distance_m", "going", "field_size",
+            )}),
+            runners=[AcquiredRunner(**{key: runner[key] for key in (
+                "gate", "horse_number", "horse_name", "age", "sex", "assigned_weight", "status",
+            )}) for runner in runners],
+            source=SourceObservation(
+                url=str(card["source_url"]), source_race_id=str(card["source_race_id"]),
+                received_at=str(card["received_at"]),
+                source_updated_at=card["source_updated_at"], parser_version=str(card["parser_version"]),
+                response_sha256=str(card["response_sha256"]), validation_status=str(card["validation_status"]),
+            ),
+        )
 
     @app.get("/api/health", response_model=HealthResponse)
     def health(response: Response) -> HealthResponse:
@@ -130,6 +158,38 @@ def create_app(
         if stored is None:
             raise HTTPException(status_code=500, detail="保存したレースを読み込めません。")
         return build_analysis(race_id, *stored)
+
+    @app.post("/api/acquisition/jra/race-card", response_model=AcquiredRaceCard, status_code=201)
+    def acquire_jra_race_card(request: RaceCardRequest) -> AcquiredRaceCard:
+        try:
+            race, runners, observation, _ = race_card_acquirer.acquire(request.url, current_time())
+            card_id = database.save_acquired_race_card(race, runners, observation)
+        except AcquisitionError as error:
+            if error.observation is not None:
+                database.save_acquisition_failure(error.observation)
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+        stored = next(
+            (item for item in database.list_acquired_race_cards() if int(item[0]["id"]) == card_id),
+            None,
+        )
+        if stored is None:
+            raise HTTPException(status_code=500, detail="保存した出馬表を読み込めません。")
+        return acquired_card_response(*stored)
+
+    @app.get("/api/acquisition/jra/race-cards", response_model=list[AcquiredRaceCard])
+    def list_jra_race_cards() -> list[AcquiredRaceCard]:
+        return [acquired_card_response(*stored) for stored in database.list_acquired_race_cards()]
+
+    @app.get("/api/acquisition/jra/failures", response_model=list[AcquisitionObservation])
+    def list_jra_acquisition_failures() -> list[AcquisitionObservation]:
+        return [AcquisitionObservation(
+            url=str(row["source_url"]), received_at=str(row["received_at"]),
+            parser_version=str(row["parser_version"]), response_sha256=str(row["response_sha256"]),
+            validation_status=str(row["validation_status"]), error_code=str(row["error_code"]),
+        ) for row in database.list_acquisition_failures()]
 
     @app.get("/api/races/{race_id}", response_model=RaceAnalysis)
     def get_race(race_id: int) -> RaceAnalysis:

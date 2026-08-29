@@ -1,7 +1,7 @@
 ---
 id: horse-racing-analytics-11
 title: JRA公開ページからレースを取得する
-triage: ready-for-agent
+triage: ready-for-human
 ---
 
 # 11 — JRA公開ページからレースを取得する
@@ -10,7 +10,7 @@ triage: ready-for-agent
 
 **Blocked by:** 08 — データをバックアップ・出力する
 
-**Status:** ready-for-agent
+**Status:** ready-for-human — 架空fixtureによるAPI受入テスト、UIテスト、型検査を実装。実行環境のWindows Application Controlによりフロントエンド実行テスト／ビルドと実ブラウザ確認が未完了。
 
 - [ ] ログイン不要な許可ホスト・固定URL形式だけを利用者操作で取得する
 - [ ] レース、出走馬、状態を既存の正規化入力へ変換する
