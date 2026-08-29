@@ -20,6 +20,7 @@ it("acquires a JRA race card and shows provenance and runners", async () => {
   expect(screen.getByText("アサヒノソラ")).toBeTruthy();
   expect(screen.getByText("検証済み / jra-race-entry/1")).toBeTruthy();
   expect(screen.getByText(/JRA更新 不明/)).toBeTruthy();
+  expect(screen.getByText("オッズ未登録です。オッズURLを入力して正式レースとして登録してください。")).toBeTruthy();
   expect(within(screen.getByRole("table")).getByText("出走")).toBeTruthy();
 });
 
@@ -51,6 +52,7 @@ it("registers validated JRA odds for the acquired race card", async () => {
   fireEvent.change(screen.getByLabelText("JRA単勝・複勝オッズURL"), { target: { value: "https://www.jra.go.jp/JRADB/accessO.html?CNAME=odds" } });
   fireEvent.click(screen.getByRole("button", { name: "オッズを取得して正式登録" }));
   expect(await screen.findByText("正式レース 3 / オッズ時点 9 を登録しました。")).toBeTruthy();
+  expect(screen.queryByText("オッズ未登録です。オッズURLを入力して正式レースとして登録してください。")).toBeNull();
   expect(fetchMock).toHaveBeenLastCalledWith("/api/acquisition/jra/race-cards/7/odds", expect.objectContaining({ method: "POST" }));
 });
 

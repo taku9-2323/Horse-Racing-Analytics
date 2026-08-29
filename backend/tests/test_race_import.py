@@ -64,6 +64,60 @@ def test_imported_analysis_can_be_loaded_again(tmp_path: Path) -> None:
     assert response.json() == imported
 
 
+def test_analysis_ready_races_are_listed_in_latest_start_order(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "analysis.sqlite3")
+    earlier_csv = SAMPLE_CSV.replace("2026-08-30", "2026-08-29").replace(
+        "2026-08-30T06:40:00Z", "2026-08-29T06:40:00Z"
+    )
+
+    with TestClient(app) as client:
+        earlier = client.post(
+            "/api/races/import",
+            content=earlier_csv.encode("utf-8"),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()
+        later = client.post(
+            "/api/races/import",
+            content=SAMPLE_CSV.encode("utf-8"),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()
+        response = client.get("/api/races")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"race_id": later["race_id"], "race": later["race"]},
+        {"race_id": earlier["race_id"], "race": earlier["race"]},
+    ]
+
+
+def test_race_detail_uses_the_latest_saved_odds_snapshot(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "analysis.sqlite3")
+    latest_odds = [
+        {"horse_number": 1, "win_odds": 4.0, "place_odds_min": 1.4, "place_odds_max": 1.8},
+        {"horse_number": 2, "win_odds": 5.0, "place_odds_min": 1.5, "place_odds_max": 2.0},
+        {"horse_number": 3, "win_odds": 8.0, "place_odds_min": 1.8, "place_odds_max": 2.5},
+        {"horse_number": 4, "win_odds": 12.0, "place_odds_min": 2.0, "place_odds_max": 3.0},
+        {"horse_number": 5, "win_odds": 20.0, "place_odds_min": 2.5, "place_odds_max": 4.0},
+    ]
+
+    with TestClient(app) as client:
+        race_id = client.post(
+            "/api/races/import", content=SAMPLE_CSV.encode("utf-8"),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()["race_id"]
+        saved = client.post(f"/api/races/{race_id}/odds-snapshots", json={
+            "observed_at": "2026-08-30T06:00:00Z", "source": "ui", "runners": latest_odds,
+        })
+        detail = client.get(f"/api/races/{race_id}")
+
+    assert saved.status_code == 201, saved.text
+    assert detail.status_code == 200
+    first = detail.json()["runners"][0]
+    assert first["win_odds"] == 4.0
+    assert first["place_odds_min"] == 1.4
+    assert first["normalized_win_market_share"] == pytest.approx(0.3529411765)
+
+
 def test_four_runner_race_does_not_generate_place_analysis(tmp_path: Path) -> None:
     four_runner_csv = "\n".join(SAMPLE_CSV.splitlines()[:5]) + "\n"
     app = create_app(tmp_path / "four-runners.sqlite3")

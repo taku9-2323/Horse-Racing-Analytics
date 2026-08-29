@@ -10,7 +10,7 @@ triage: ready-for-agent
 
 **Blocked by:** 12 — JRA公開ページからオッズを取得する
 
-**Status:** blocked by 12
+**Status:** ready-for-agent
 
 - [ ] 着順、出走状態、単勝・複勝払戻、返還対象を既存の結果契約へ変換する
 - [ ] レース識別子、馬番集合、着順、払戻、返還の整合性を全件検証する

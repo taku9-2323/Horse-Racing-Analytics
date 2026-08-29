@@ -38,17 +38,72 @@ type RaceAnalysis = {
   candidate_reason: string;
 };
 
+type RaceListItem = { race_id: number; race: RaceAnalysis["race"] };
+
 type ImportIssue = { row: number; column: string; code: string; description: string };
 type ImportErrorDetail = { message: string; errors?: ImportIssue[] };
 
 const statusLabel = (status: HealthStatus) => (status === "ok" ? "稼働中" : "停止中");
+const latestRaceFirst = (items: RaceListItem[]) => [...items].sort(
+  (left, right) => right.race.start_utc.localeCompare(left.race.start_utc) || right.race_id - left.race_id,
+);
 
 function App() {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
+  const [races, setRaces] = useState<RaceListItem[]>([]);
+  const [raceListState, setRaceListState] = useState<"loading" | "ready" | "error">("loading");
+  const [analysisState, setAnalysisState] = useState<"idle" | "loading" | "error">("idle");
+  const [analysisError, setAnalysisError] = useState("");
+  const [selectedRaceId, setSelectedRaceId] = useState<number | null>(null);
   const [importState, setImportState] = useState<"idle" | "loading" | "error">("idle");
   const [importError, setImportError] = useState<ImportErrorDetail | null>(null);
+
+  const showAnalysis = (loaded: RaceAnalysis) => {
+    setAnalysis(loaded);
+    setSelectedRaceId(loaded.race_id);
+    setRaces((current) => latestRaceFirst([
+      { race_id: loaded.race_id, race: loaded.race },
+      ...current.filter((item) => item.race_id !== loaded.race_id),
+    ]));
+    setRaceListState("ready");
+  };
+
+  const loadRaceList = async (signal?: AbortSignal) => {
+    try {
+      const response = await fetch("/api/races", { signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as unknown;
+      if (!Array.isArray(payload)) throw new Error("登録済みレース一覧の形式が不正です。");
+      setRaces(latestRaceFirst(payload as RaceListItem[]));
+      setRaceListState("ready");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setRaceListState("error");
+    }
+  };
+
+  const loadRace = async (raceId: number) => {
+    setAnalysisState("loading");
+    setAnalysisError("");
+    setAnalysis(null);
+    setSelectedRaceId(raceId);
+    try {
+      const response = await fetch(`/api/races/${raceId}`);
+      if (!response.ok) {
+        throw new Error(response.status === 404
+          ? "レースが見つかりません。登録済み一覧を再読み込みするか、JRAのレース情報とオッズを登録してください。"
+          : "市場分析を読み込めませんでした。再読み込みするか、CSV取込を使用してください。");
+      }
+      const loaded = (await response.json()) as RaceAnalysis;
+      showAnalysis(loaded);
+      setAnalysisState("idle");
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : "レースを読み込めませんでした。");
+      setAnalysisState("error");
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -71,6 +126,7 @@ function App() {
     };
 
     void loadHealth();
+    void loadRaceList(controller.signal);
     return () => controller.abort();
   }, []);
 
@@ -92,7 +148,8 @@ function App() {
         }
         throw new Error(payload.detail ?? `HTTP ${response.status}`);
       }
-      setAnalysis((await response.json()) as RaceAnalysis);
+      const imported = (await response.json()) as RaceAnalysis;
+      showAnalysis(imported);
       setImportState("idle");
     } catch (error) {
       setImportError({ message: error instanceof Error ? error.message : "不明なエラー" });
@@ -160,7 +217,7 @@ function App() {
         )}
       </section>
 
-      <JraRaceAcquisitionPanel />
+      <JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
 
       <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
         <div className="panel-heading">
@@ -168,8 +225,44 @@ function App() {
             <span className="section-number">03</span>
             <h2 id="race-analysis-heading">1レース市場分析</h2>
           </div>
-          <span className="local-badge">UTF-8 CSV</span>
+          <span className="local-badge">登録済み / CSV</span>
         </div>
+        <section aria-labelledby="registered-races-heading">
+          <h3 id="registered-races-heading">登録済みレース</h3>
+          {raceListState === "loading" && <p role="status">登録済みレースを読み込んでいます…</p>}
+          {raceListState === "error" && (
+            <div className="import-error" role="alert">
+              <strong>登録済みレースを読み込めませんでした。</strong>
+              <button type="button" onClick={() => void loadRaceList()}>再読み込み</button>
+            </div>
+          )}
+          {raceListState === "ready" && races.length === 0 && (
+            <p className="empty-note">登録済みレースはありません。JRAレース情報とオッズを登録するか、CSVを取り込んでください。</p>
+          )}
+          {races.length > 0 && (
+            <div className="maintenance-actions" aria-label="登録済みレース一覧">
+              {races.map((item) => (
+                <button
+                  type="button"
+                  key={item.race_id}
+                  aria-pressed={selectedRaceId === item.race_id}
+                  onClick={() => void loadRace(item.race_id)}
+                >
+                  {item.race.race_date} {item.race.racecourse} {item.race.race_number}R
+                </button>
+              ))}
+            </div>
+          )}
+          {analysisState === "loading" && <p role="status">市場分析を読み込んでいます…</p>}
+          {analysisState === "error" && (
+            <div className="import-error" role="alert">
+              <strong>{analysisError}</strong>
+              {selectedRaceId !== null && (
+                <button type="button" onClick={() => void loadRace(selectedRaceId)}>選択したレースを再読み込み</button>
+              )}
+            </div>
+          )}
+        </section>
         <div className="import-form">
           <label htmlFor="race-csv">CSVファイル</label>
           <input
@@ -256,8 +349,8 @@ function App() {
       <DataMaintenancePanel />
 
       <footer>
-        <span>チケット08</span>
-        <span>バックアップ・復元・データ出力</span>
+        <span>チケット14</span>
+        <span>登録済みレース選択・市場分析</span>
       </footer>
     </main>
   );

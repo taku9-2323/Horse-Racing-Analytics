@@ -17,6 +17,10 @@ const healthResponse = (databaseStatus: "ok" | "error", status = 200) =>
     },
   );
 
+const emptyRaceListResponse = () => new Response(JSON.stringify([]), {
+  status: 200, headers: { "Content-Type": "application/json" },
+});
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -49,6 +53,119 @@ describe("system status", () => {
 });
 
 describe("race analysis", () => {
+  it("opens the market analysis immediately after JRA odds registration", async () => {
+    const race = {
+      organizer: "JRA", country: "JP", racecourse: "札幌", race_date: "2026-08-29", race_number: 11,
+      start_time: "15:25", timezone: "Asia/Tokyo", start_utc: "2026-08-29T06:25:00Z",
+      surface: "芝", distance_m: 2000, going: "重", field_size: 1,
+    };
+    const analysis = {
+      race_id: 3, race,
+      runners: [{ horse_number: 1, horse_name: "架空馬", win_odds: 2.4,
+        raw_inverse_win_odds: 1 / 2.4, normalized_win_market_share: 1,
+        place_odds_min: 1.3, place_odds_max: 1.6, place_break_even_hit_rate: null }],
+      candidate_status: "期待値候補なし",
+      candidate_reason: "市場基準は独立した予測確率ではないため、候補を生成しません。",
+    };
+    const card = {
+      card_id: 7, version: 1, status: "active", supersedes_card_id: null, race,
+      runners: [{ gate: 1, horse_number: 1, horse_name: "架空馬", age: 4, sex: "牡", assigned_weight: 58, status: "出走" }],
+      source: { url: "card", source_race_id: "JRA-20260829-01-02-03-11", received_at: "2026-08-29T04:00:00Z",
+        source_updated_at: null, parser_version: "jra-race-entry/1", response_sha256: "a".repeat(64), validation_status: "valid" },
+    };
+    const response = (value: object, status = 200) => new Response(JSON.stringify(value), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
+      if (url === "/api/races") return Promise.resolve(response([]));
+      if (url === "/api/acquisition/jra/race-card") return Promise.resolve(response(card, 201));
+      if (url === "/api/acquisition/jra/race-cards/7/odds") return Promise.resolve(response({ race_id: 3, snapshot_id: 9 }, 201));
+      if (url === "/api/races/3") return Promise.resolve(response(analysis));
+      if (url === "/api/races/3/odds-snapshots" || url === "/api/races/3/predictions") return Promise.resolve(response([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("JRAレースページURL"), { target: { value: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=card" } });
+    fireEvent.click(screen.getByRole("button", { name: "取得して登録" }));
+    await screen.findByText("検証済み / jra-race-entry/1");
+    fireEvent.change(screen.getByLabelText("JRA単勝・複勝オッズURL"), { target: { value: "https://www.jra.go.jp/JRADB/accessO.html?CNAME=odds" } });
+    fireEvent.click(screen.getByRole("button", { name: "オッズを取得して正式登録" }));
+
+    expect(await screen.findByText("単勝市場投票シェア")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "2026-08-29 札幌 11R" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("selects a registered race and shows its market analysis and saved history", async () => {
+    const race = {
+      organizer: "JRA", country: "JP", racecourse: "札幌", race_date: "2026-08-29", race_number: 11,
+      start_time: "15:25", timezone: "Asia/Tokyo", start_utc: "2026-08-29T06:25:00Z",
+      surface: "芝", distance_m: 2000, going: "重", field_size: 1,
+    };
+    const analysis = {
+      race_id: 3, race,
+      runners: [{ horse_number: 1, horse_name: "架空馬", win_odds: 2.4,
+        raw_inverse_win_odds: 1 / 2.4, normalized_win_market_share: 1,
+        place_odds_min: 1.3, place_odds_max: 1.6, place_break_even_hit_rate: null }],
+      candidate_status: "期待値候補なし",
+      candidate_reason: "市場基準は独立した予測確率ではないため、候補を生成しません。",
+    };
+    const snapshot = { id: 9, race_id: 3, observed_at: null, received_at: "2026-08-29T05:00:00Z",
+      source: "jra_web", runners: [{ horse_number: 1, win_odds: 2.4, place_odds_min: 1.3, place_odds_max: 1.6 }] };
+    const response = (value: object) => new Response(JSON.stringify(value), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
+      if (url === "/api/races") return Promise.resolve(response([
+        { race_id: 4, race: { ...race, race_date: "2026-08-30", start_utc: "2026-08-30T06:25:00Z", racecourse: "東京", race_number: 10 } },
+        { race_id: 3, race },
+      ]));
+      if (url === "/api/races/3") return Promise.resolve(response(analysis));
+      if (url === "/api/races/3/odds-snapshots") return Promise.resolve(response([snapshot]));
+      if (url === "/api/races/3/predictions") return Promise.resolve(response([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
+
+    expect(await screen.findByRole("heading", { name: "札幌 11R" })).toBeTruthy();
+    expect(screen.getByText("単勝市場投票シェア")).toBeTruthy();
+    expect(await screen.findByText("時点 #9 / 観測 不明")).toBeTruthy();
+    expect(screen.getByText("市場基準は独立した予測確率ではないため、候補を生成しません。")).toBeTruthy();
+    const raceButtons = within(screen.getByRole("region", { name: "登録済みレース" })).getAllByRole("button");
+    expect(raceButtons.map((button) => button.textContent)).toEqual([
+      "2026-08-30 東京 10R", "2026-08-29 札幌 11R",
+    ]);
+  });
+
+  it("shows a recovery action when a selected race cannot be loaded", async () => {
+    const race = { organizer: "JRA", country: "JP", racecourse: "札幌", race_date: "2026-08-29", race_number: 11,
+      start_time: "15:25", timezone: "Asia/Tokyo", start_utc: "2026-08-29T06:25:00Z",
+      surface: "芝", distance_m: 2000, going: "重", field_size: 1 };
+    const response = (value: object, status = 200) => new Response(JSON.stringify(value), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
+      if (url === "/api/races") return Promise.resolve(response([{ race_id: 3, race }]));
+      if (url === "/api/races/3") return Promise.resolve(response({}, 500));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(/市場分析を読み込めませんでした/)).toBeTruthy();
+    expect(within(alert).getByRole("button", { name: "選択したレースを再読み込み" })).toBeTruthy();
+  });
+
   it("imports a CSV and clearly separates market shares from place break-even rates", async () => {
     const analysis = {
       race_id: 1,
@@ -68,6 +185,7 @@ describe("race analysis", () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify(analysis), {
         status: 201, headers: { "Content-Type": "application/json" },
       }));
@@ -98,6 +216,7 @@ describe("race analysis", () => {
     }}), { status: 422, headers: { "Content-Type": "application/json" } });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(errorResponse));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
@@ -145,6 +264,7 @@ describe("prediction freezing", () => {
     });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(jsonResponse(analysis, 201))
       .mockResolvedValueOnce(jsonResponse([historicalSnapshot]))
       .mockResolvedValueOnce(jsonResponse([]))
@@ -166,8 +286,8 @@ describe("prediction freezing", () => {
     fireEvent.click(screen.getByRole("button", { name: "オッズ時点を保存" }));
     expect(await screen.findByText("時点 #10 / 観測 2026-08-30T04:55:00Z")).toBeTruthy();
     expect(screen.getByText("1番 単勝2.4 / 複勝1.2–1.5")).toBeTruthy();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
-    const snapshotRequest = fetchMock.mock.calls[4][1] as RequestInit;
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    const snapshotRequest = fetchMock.mock.calls[5][1] as RequestInit;
     const snapshotBody = JSON.parse(String(snapshotRequest.body)) as { runners: Array<{ win_odds: number }> };
     expect(snapshotBody.runners[0].win_odds).toBe(2.4);
     fireEvent.click(screen.getAllByRole("button", { name: "この時点の予測を固定" }).at(-1)!);
@@ -203,6 +323,7 @@ describe("analysis tag management", () => {
     });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
+      .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(jsonResponse([tag]))
       .mockResolvedValueOnce(jsonResponse(enabled))
       .mockResolvedValueOnce(jsonResponse([{

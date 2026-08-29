@@ -24,7 +24,10 @@ from app.analysis_tags import (
     AnalysisTag, AnalysisTagConditionError, TagAuditEvent, TagStateChange, TagVersionCreate,
     analysis_tag_response, audit_event_response,
 )
-from app.race_analysis import CsvValidationError, RaceAnalysis, build_analysis, parse_race_csv
+from app.race_analysis import (
+    CsvValidationError, RaceAnalysis, RaceListItem, build_analysis,
+    build_race_summary, parse_race_csv,
+)
 from app.predictions import (
     CorrectionRequest, FreezeRequest, OddsSnapshot, PredictionRun, SnapshotCreate,
     prediction_response, snapshot_response, utc_iso,
@@ -160,6 +163,13 @@ def create_app(
         if stored is None:
             raise HTTPException(status_code=500, detail="保存したレースを読み込めません。")
         return build_analysis(race_id, *stored)
+
+    @app.get("/api/races", response_model=list[RaceListItem])
+    def list_races() -> list[RaceListItem]:
+        return [
+            RaceListItem(race_id=int(race["id"]), race=build_race_summary(race))
+            for race in database.list_races()
+        ]
 
     @app.post("/api/acquisition/jra/race-card", response_model=AcquiredRaceCard, status_code=201)
     def acquire_jra_race_card(request: RaceCardRequest) -> AcquiredRaceCard:

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
+from app.race_analysis import win_market_baseline
 
 
 class RaceImportConflictError(Exception):
@@ -397,7 +398,14 @@ class SqliteDatabase:
                 if race_id is None:
                     raise RuntimeError("Race could not be saved")
                 odds_by_number = {int(row["horse_number"]): row for row in odds}
-                inverse_total = sum(1 / float(row["win_odds"]) for row in odds)
+                market_by_number = {
+                    int(row["horse_number"]): values
+                    for row, values in zip(
+                        odds,
+                        win_market_baseline([float(row["win_odds"]) for row in odds]),
+                        strict=True,
+                    )
+                }
                 connection.executemany(
                     """INSERT INTO runners (race_id,gate,horse_number,horse_name,age,sex,assigned_weight,status,
                     win_odds,place_odds_min,place_odds_max,raw_inverse_win_odds,normalized_win_market_share)
@@ -405,8 +413,7 @@ class SqliteDatabase:
                     [(race_id, row["gate"], row["horse_number"], row["horse_name"], row["age"], row["sex"],
                       row["assigned_weight"], row["status"], odds_by_number[int(row["horse_number"])]["win_odds"],
                       odds_by_number[int(row["horse_number"])]["place_odds_min"], odds_by_number[int(row["horse_number"])]["place_odds_max"],
-                      1 / float(odds_by_number[int(row["horse_number"])]["win_odds"]),
-                      (1 / float(odds_by_number[int(row["horse_number"])]["win_odds"])) / inverse_total) for row in card_runners],
+                      *market_by_number[int(row["horse_number"])]) for row in card_runners],
                 )
                 connection.execute("INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)", (card_id, race_id))
             else:
@@ -592,7 +599,7 @@ class SqliteDatabase:
             )
         )
 
-    def get_race(self, race_id: int) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+    def get_race(self, race_id: int) -> tuple[sqlite3.Row, list[Any]] | None:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             race = connection.execute(
@@ -604,7 +611,30 @@ class SqliteDatabase:
                 "SELECT * FROM runners WHERE race_id = ? ORDER BY horse_number",
                 (race_id,),
             ).fetchall()
+            latest_snapshot = connection.execute(
+                "SELECT id FROM odds_snapshots WHERE race_id = ? ORDER BY id DESC LIMIT 1",
+                (race_id,),
+            ).fetchone()
+            if latest_snapshot is not None:
+                odds = connection.execute(
+                    "SELECT * FROM odds_snapshot_runners WHERE snapshot_id = ? ORDER BY horse_number",
+                    (latest_snapshot["id"],),
+                ).fetchall()
+                odds_by_number = {int(row["horse_number"]): row for row in odds}
+                runners = [{
+                    **dict(runner),
+                    "win_odds": odds_by_number[int(runner["horse_number"])]["win_odds"],
+                    "place_odds_min": odds_by_number[int(runner["horse_number"])]["place_odds_min"],
+                    "place_odds_max": odds_by_number[int(runner["horse_number"])]["place_odds_max"],
+                } for runner in runners]
         return race, runners
+
+    def list_races(self) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                "SELECT * FROM races ORDER BY start_utc DESC, id DESC"
+            ).fetchall()
 
     def create_odds_snapshot(
         self,
@@ -760,8 +790,7 @@ class SqliteDatabase:
                 """,
                 (snapshot_id,),
             ).fetchall()
-            raw_values = [1 / float(row["win_odds"]) for row in odds]
-            total = sum(raw_values)
+            market_values = win_market_baseline([float(row["win_odds"]) for row in odds])
             connection.executemany(
                 """
                 INSERT INTO runner_predictions (
@@ -769,8 +798,8 @@ class SqliteDatabase:
                 ) VALUES (?, ?, ?, ?)
                 """,
                 [
-                    (prediction_id, row["horse_number"], raw, raw / total)
-                    for row, raw in zip(odds, raw_values, strict=True)
+                    (prediction_id, row["horse_number"], raw, share)
+                    for row, (raw, share) in zip(odds, market_values, strict=True)
                 ],
             )
             race_runners = connection.execute(

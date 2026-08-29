@@ -1,4 +1,5 @@
 import csv
+from collections.abc import Sequence
 from datetime import date, datetime, time
 from io import StringIO
 from math import isfinite
@@ -55,6 +56,11 @@ class RaceAnalysis(BaseModel):
     candidate_reason: str
 
 
+class RaceListItem(BaseModel):
+    race_id: int
+    race: RaceSummary
+
+
 class CsvValidationIssue(BaseModel):
     row: int
     column: str
@@ -73,6 +79,12 @@ class CsvValidationError(Exception):
             "message": "CSVに修正が必要な箇所があります。",
             "errors": [issue.model_dump() for issue in self.issues],
         }
+
+
+def win_market_baseline(win_odds: Sequence[float]) -> list[tuple[float, float]]:
+    raw_values = [1 / odds for odds in win_odds]
+    total = sum(raw_values)
+    return [(raw, raw / total) for raw in raw_values]
 
 
 def parse_race_csv(content: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -170,8 +182,7 @@ def parse_race_csv(content: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]
     if issues:
         raise CsvValidationError(issues)
 
-    raw_inverse_win_odds = [1 / float(row["win_odds"]) for row in parsed]
-    inverse_total = sum(raw_inverse_win_odds)
+    market_values = win_market_baseline([float(row["win_odds"]) for row in parsed])
     race = {key: first[key] for key in race_keys}
     runners = [
         {
@@ -181,9 +192,9 @@ def parse_race_csv(content: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]
                 "place_odds_max",
             )},
             "raw_inverse_win_odds": raw,
-            "normalized_win_market_share": raw / inverse_total,
+            "normalized_win_market_share": share,
         }
-        for row, raw in zip(parsed, raw_inverse_win_odds, strict=True)
+        for row, (raw, share) in zip(parsed, market_values, strict=True)
     ]
     return race, runners
 
@@ -262,13 +273,14 @@ def validate_choice(value: str | None, allowed: set[str], row_number: int, colum
 
 def build_analysis(race_id: int, race: Any, runners: list[Any]) -> RaceAnalysis:
     supports_place = len(runners) >= 5
+    market_values = win_market_baseline([float(runner["win_odds"]) for runner in runners])
     runner_analyses = [
         RunnerAnalysis(
             horse_number=int(runner["horse_number"]),
             horse_name=str(runner["horse_name"]),
             win_odds=float(runner["win_odds"]),
-            raw_inverse_win_odds=float(runner["raw_inverse_win_odds"]),
-            normalized_win_market_share=float(runner["normalized_win_market_share"]),
+            raw_inverse_win_odds=raw,
+            normalized_win_market_share=share,
             place_odds_min=float(runner["place_odds_min"]),
             place_odds_max=float(runner["place_odds_max"]),
             place_break_even_hit_rate=(PlaceBreakEvenHitRate(
@@ -277,19 +289,23 @@ def build_analysis(race_id: int, race: Any, runners: list[Any]) -> RaceAnalysis:
                 maximum=1 / float(runner["place_odds_min"]),
             ) if supports_place else None),
         )
-        for runner in runners
+        for runner, (raw, share) in zip(runners, market_values, strict=True)
     ]
     return RaceAnalysis(
         race_id=race_id,
-        race=RaceSummary(
-            organizer=str(race["organizer"]), country=str(race["country"]),
-            racecourse=str(race["racecourse"]), race_date=str(race["race_date"]),
-            race_number=int(race["race_number"]), start_time=str(race["start_time"]),
-            timezone=str(race["timezone"]), start_utc=str(race["start_utc"]),
-            surface=str(race["surface"]), distance_m=int(race["distance_m"]),
-            going=str(race["going"]), field_size=len(runners),
-        ),
+        race=build_race_summary(race),
         runners=runner_analyses,
         candidate_status="期待値候補なし",
         candidate_reason="市場基準は独立した予測確率ではないため、候補を生成しません。",
+    )
+
+
+def build_race_summary(race: Any) -> RaceSummary:
+    return RaceSummary(
+        organizer=str(race["organizer"]), country=str(race["country"]),
+        racecourse=str(race["racecourse"]), race_date=str(race["race_date"]),
+        race_number=int(race["race_number"]), start_time=str(race["start_time"]),
+        timezone=str(race["timezone"]), start_utc=str(race["start_utc"]),
+        surface=str(race["surface"]), distance_m=int(race["distance_m"]),
+        going=str(race["going"]), field_size=int(race["field_size"]),
     )

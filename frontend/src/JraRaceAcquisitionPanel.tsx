@@ -7,7 +7,9 @@ type RaceCard = {
   source: { url: string; received_at: string; source_updated_at: string | null; parser_version: string; response_sha256: string; validation_status: string };
 };
 
-export default function JraRaceAcquisitionPanel() {
+type Props = { onRaceRegistered?: (raceId: number) => void | Promise<void> };
+
+export default function JraRaceAcquisitionPanel({ onRaceRegistered }: Props) {
   const [url, setUrl] = useState("");
   const [card, setCard] = useState<RaceCard | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
@@ -15,6 +17,7 @@ export default function JraRaceAcquisitionPanel() {
   const [oddsUrl, setOddsUrl] = useState("");
   const [oddsMessage, setOddsMessage] = useState("");
   const [oddsLoading, setOddsLoading] = useState(false);
+  const [oddsRegistered, setOddsRegistered] = useState(false);
 
   const acquire = async () => {
     setState("loading");
@@ -28,6 +31,8 @@ export default function JraRaceAcquisitionPanel() {
         throw new Error(payload.detail?.message ?? `HTTP ${response.status}`);
       }
       setCard((await response.json()) as RaceCard);
+      setOddsRegistered(false);
+      setOddsMessage("");
       setState("idle");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "取得できませんでした。CSV取込を使用してください。");
@@ -44,7 +49,10 @@ export default function JraRaceAcquisitionPanel() {
       });
       const payload = (await response.json()) as { race_id?: number; snapshot_id?: number; detail?: { message?: string } };
       if (!response.ok) throw new Error(payload.detail?.message ?? `HTTP ${response.status}`);
+      if (typeof payload.race_id !== "number") throw new Error("登録したレースを特定できませんでした。");
+      setOddsRegistered(true);
       setOddsMessage(`正式レース ${payload.race_id} / オッズ時点 ${payload.snapshot_id} を登録しました。`);
+      await onRaceRegistered?.(payload.race_id);
     } catch (error) {
       setOddsMessage(error instanceof Error ? error.message : "オッズを取得できませんでした。CSV取込を使用してください。");
     } finally { setOddsLoading(false); }
@@ -64,6 +72,7 @@ export default function JraRaceAcquisitionPanel() {
       <div className="table-wrap"><table><thead><tr><th>枠・馬番</th><th>馬名</th><th>性齢</th><th>負担重量</th><th>状態</th></tr></thead><tbody>{card.runners.map((runner) => <tr key={runner.horse_number}><td>{runner.gate}枠 {runner.horse_number}番</td><td>{runner.horse_name}</td><td>{runner.sex}{runner.age}</td><td>{runner.assigned_weight.toFixed(1)}kg</td><td>{runner.status}</td></tr>)}</tbody></table></div>
       <aside className="candidate-empty"><strong>検証済み / {card.source.parser_version}</strong><span>受付 {card.source.received_at} / JRA更新 {card.source.source_updated_at ?? "不明"} / hash {card.source.response_sha256.slice(0, 12)}…</span></aside>
       <div className="import-form">
+        {!oddsRegistered && <p className="empty-note">オッズ未登録です。オッズURLを入力して正式レースとして登録してください。</p>}
         <label htmlFor="jra-odds-url">JRA単勝・複勝オッズURL</label>
         <input id="jra-odds-url" type="url" value={oddsUrl} onChange={(event) => setOddsUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessO.html?CNAME=..." />
         <button type="button" disabled={!oddsUrl || oddsLoading} onClick={() => void acquireOdds()}>{oddsLoading ? "取得・検証中…" : "オッズを取得して正式登録"}</button>
