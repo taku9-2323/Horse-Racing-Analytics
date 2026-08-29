@@ -9,7 +9,7 @@ it("acquires a JRA race card and shows provenance and runners", async () => {
     card_id: 1,
     race: { racecourse: "架空", race_date: "2026-08-30", race_number: 7, start_time: "13:25", surface: "芝", distance_m: 1800, going: "良", field_size: 1 },
     runners: [{ gate: 1, horse_number: 1, horse_name: "アサヒノソラ", age: 3, sex: "牡", assigned_weight: 56, status: "出走" }],
-    source: { url: "https://www.jra.go.jp/JRADB/accessD.html", received_at: "2026-08-29T04:00:00Z", source_updated_at: null, parser_version: "jra-race-card/1", response_sha256: "a".repeat(64), validation_status: "valid" },
+    source: { url: "https://www.jra.go.jp/JRADB/accessD.html", received_at: "2026-08-29T04:00:00Z", source_updated_at: null, parser_version: "jra-race-card/2", response_sha256: "a".repeat(64), validation_status: "valid" },
   }), { status: 201, headers: { "Content-Type": "application/json" } })));
 
   render(<JraRaceAcquisitionPanel />);
@@ -18,7 +18,7 @@ it("acquires a JRA race card and shows provenance and runners", async () => {
 
   expect(await screen.findByRole("heading", { name: "架空 7R" })).toBeTruthy();
   expect(screen.getByText("アサヒノソラ")).toBeTruthy();
-  expect(screen.getByText("検証済み / jra-race-card/1")).toBeTruthy();
+  expect(screen.getByText("検証済み / jra-race-card/2")).toBeTruthy();
   expect(screen.getByText(/JRA更新 不明/)).toBeTruthy();
   expect(within(screen.getByRole("table")).getByText("出走")).toBeTruthy();
 });

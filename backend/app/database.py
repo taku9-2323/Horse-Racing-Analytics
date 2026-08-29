@@ -300,6 +300,21 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '7' WHERE key = 'schema_version'"
             )
+            connection.execute(
+                """
+                UPDATE acquired_race_cards
+                SET source_race_id =
+                    'JRA-' || substr(source_race_id, 22, 8) || '-' ||
+                    substr(source_race_id, 10, 2) || '-' ||
+                    substr(source_race_id, 16, 2) || '-' ||
+                    substr(source_race_id, 18, 2) || '-' ||
+                    substr(source_race_id, 20, 2)
+                WHERE source_race_id GLOB 'pw01dde[01][10]*'
+                """
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '8' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -307,7 +322,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("7",):
+        if row != ("8",):
             raise RuntimeError("SQLite schema is not ready")
 
     def save_acquired_race_card(

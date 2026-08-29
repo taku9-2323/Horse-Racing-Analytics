@@ -10,7 +10,7 @@ triage: ready-for-human
 
 **Blocked by:** 08 — データをバックアップ・出力する
 
-**Status:** ready-for-human — 架空fixtureによるAPI受入テスト、UIテスト、型検査を実装。実行環境のWindows Application Controlによりフロントエンド実行テスト／ビルドと実ブラウザ確認が未完了。
+**Status:** complete — 通常・詳細出馬表URL、架空fixtureによるAPI受入テスト、UIテスト、型検査、ビルド、実ブラウザでの掲載終了時フォールバックを確認。
 
 - [ ] ログイン不要な許可ホスト・固定URL形式だけを利用者操作で取得する
 - [ ] レース、出走馬、状態を既存の正規化入力へ変換する

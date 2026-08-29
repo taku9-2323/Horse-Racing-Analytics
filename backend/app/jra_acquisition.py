@@ -17,9 +17,13 @@ from pydantic import BaseModel
 
 ALLOWED_HOST = "www.jra.go.jp"
 ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
-PARSER_VERSION = "jra-race-card/1"
+PARSER_VERSION = "jra-race-card/2"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+SOURCE_RACE_ID_PATTERN = re.compile(
+    r"pw01dde(?P<view>01|10)(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
+    r"(?P<day>\d{2})(?P<race>\d{2})(?P<date>\d{8})/[A-Za-z0-9]{2}",
+)
 RACECOURSES_BY_CODE = {
     "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
     "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉",
@@ -202,7 +206,7 @@ class JraRaceCardAcquirer:
                 503, url, robots.body, received_at,
             )
         response = self._fetcher(url)
-        if response.status != 200 or response.final_url != url:
+        if response.status != 200 or not same_allowed_race_card_url(response.final_url, url):
             raise audited_error(
                 "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
                 503, url, response.body, received_at,
@@ -229,7 +233,7 @@ class JraRaceCardAcquirer:
             }
             raise
         observation = {
-            "url": url, "source_race_id": parse_qs(urlparse(url).query)["CNAME"][0],
+            "url": url, "source_race_id": str(parse_source_race_identity(url)["source_race_id"]),
             "received_at": received_utc, "source_updated_at": source_updated_at,
             "parser_version": PARSER_VERSION, "response_sha256": digest,
             "validation_status": "valid",
@@ -271,12 +275,28 @@ def validate_race_card_url(url: str) -> None:
     parsed = urlparse(url)
     query = parse_qs(parsed.query, strict_parsing=True)
     cname = query.get("CNAME", [])
-    valid_cname = len(cname) == 1 and re.fullmatch(r"pw01dde01[0-9]{18,30}/[A-Za-z0-9]{2}", cname[0])
+    valid_cname = len(cname) == 1 and SOURCE_RACE_ID_PATTERN.fullmatch(cname[0])
     if (parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST or parsed.port not in {None, 443}
             or parsed.username is not None or parsed.password is not None
             or parsed.path != "/JRADB/accessD.html" or parsed.fragment or set(query) != {"CNAME"}
             or valid_cname is None):
         raise AcquisitionError("url_not_allowed", "許可されたJRA出馬表URLを指定してください。", 422)
+
+
+def same_allowed_race_card_url(left: str, right: str) -> bool:
+    try:
+        validate_race_card_url(left)
+        validate_race_card_url(right)
+    except (AcquisitionError, ValueError):
+        return False
+    left_parsed, right_parsed = urlparse(left), urlparse(right)
+    return (
+        left_parsed.scheme, left_parsed.hostname, left_parsed.port, left_parsed.path,
+        parse_qs(left_parsed.query).get("CNAME"),
+    ) == (
+        right_parsed.scheme, right_parsed.hostname, right_parsed.port, right_parsed.path,
+        parse_qs(right_parsed.query).get("CNAME"),
+    )
 
 
 def audited_error(
@@ -396,10 +416,7 @@ def parse_runner(row: Element) -> dict[str, Any]:
 
 def parse_source_race_identity(url: str) -> dict[str, str | int]:
     cname = parse_qs(urlparse(url).query)["CNAME"][0]
-    match = re.fullmatch(
-        r"pw01dde01(?P<course_code>\d{2})(?P<year>\d{4})(?P<meeting>\d{2})"
-        r"(?P<day>\d{2})(?P<race>\d{2})(?P<date>\d{8})/[A-Za-z0-9]{2}", cname,
-    )
+    match = SOURCE_RACE_ID_PATTERN.fullmatch(cname)
     if match is None:
         raise ValueError("race_identity")
     date_value = match.group("date")
@@ -407,7 +424,10 @@ def parse_source_race_identity(url: str) -> dict[str, str | int]:
     if racecourse is None:
         raise ValueError("race_identity")
     return {
-        "source_race_id": cname,
+        "source_race_id": (
+            f"JRA-{date_value}-{match.group('course_code')}-"
+            f"{match.group('meeting')}-{match.group('day')}-{int(match.group('race')):02d}"
+        ),
         "racecourse": racecourse,
         "race_number": int(match.group("race")),
         "race_date": f"{date_value[:4]}-{date_value[4:6]}-{date_value[6:]}",
