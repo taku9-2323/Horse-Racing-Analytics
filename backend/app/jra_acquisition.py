@@ -136,10 +136,12 @@ class Element:
     attrs: dict[str, str]
     children: list["Element"] = field(default_factory=list)
     fragments: list[str] = field(default_factory=list)
+    content: list["Element | str"] = field(default_factory=list)
     closed: bool = False
 
     def text(self) -> str:
-        return " ".join(" ".join([*self.fragments, *(child.text() for child in self.children)]).split())
+        parts = [item.text() if isinstance(item, Element) else item for item in self.content]
+        return " ".join(" ".join(parts).split())
 
     def find(self, *, tag: str | None = None, class_name: str | None = None, element_id: str | None = None) -> "Element | None":
         if self._matches(tag, class_name, element_id):
@@ -172,6 +174,7 @@ class _TreeParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         element = Element(tag, {key: value or "" for key, value in attrs})
         self._stack[-1].children.append(element)
+        self._stack[-1].content.append(element)
         if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}:
             self._stack.append(element)
 
@@ -190,6 +193,7 @@ class _TreeParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if data.strip():
             self._stack[-1].fragments.append(data)
+            self._stack[-1].content.append(data)
 
 
 def default_fetcher(url: str) -> FetchResponse:
@@ -332,7 +336,7 @@ class JraRaceCardAcquirer:
 class JraOddsAcquirer:
     def __init__(self, fetcher: Callable[[str], FetchResponse]) -> None:
         self._fetcher = fetcher
-        self._memory_cache: dict[str, tuple[datetime, bytes]] = {}
+        self._memory_cache: dict[str, tuple[datetime, bytes, str]] = {}
 
     def acquire(self, url: str, received_at: datetime) -> tuple[list[dict[str, float | int]], dict[str, Any]]:
         validate_odds_url(url)
@@ -342,6 +346,7 @@ class JraOddsAcquirer:
             cached = None
         if cached is not None:
             body = cached[1]
+            content_type = cached[2]
             response_received_at = cached[0]
         else:
             robots = self._fetcher(ROBOTS_URL)
@@ -352,13 +357,14 @@ class JraOddsAcquirer:
             if response.status != 200 or response.final_url not in allowed_final_urls or not response.headers.get("content-type", "").lower().startswith("text/html"):
                 raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, response.body, received_at)
             body = response.body
-            self._memory_cache[url] = (received_at, body)
+            content_type = response.headers.get("content-type", "")
+            self._memory_cache[url] = (received_at, body, content_type)
             response_received_at = received_at
         digest = sha256(body).hexdigest()
         try:
-            odds = parse_jra_odds_page(body, "text/html; charset=utf-8")
-            validate_odds_page_identity(body, "text/html; charset=utf-8", url)
-            source_updated_at = parse_jra_odds_update_time(body, "text/html; charset=utf-8", url)
+            odds = parse_jra_odds_page(body, content_type)
+            validate_odds_page_identity(body, content_type, url)
+            source_updated_at = parse_jra_odds_update_time(body, content_type, url)
         except AcquisitionError as error:
             error.observation = {"url": url, "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "parser_version": "jra-odds/1", "response_sha256": digest, "validation_status": "invalid", "error_code": error.code}
             raise
@@ -427,13 +433,8 @@ def robots_allows(body: bytes, url: str) -> bool:
 def parse_race_card(
     body: bytes, content_type: str, source_url: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
-    charset_match = re.search(r"charset=([\w-]+)", content_type)
-    meta_match = re.search(br"charset=[\"']?([\w-]+)", body[:4096], re.I)
-    charset = charset_match.group(1) if charset_match else (
-        meta_match.group(1).decode("ascii") if meta_match else "cp932"
-    )
     try:
-        text = body.decode(charset)
+        text = decode_html(body, content_type)
     except (LookupError, UnicodeDecodeError) as error:
         raise AcquisitionError("race_card_validation_failed", "JRAレースページを検証できませんでした。", 422) from error
     parser = _TreeParser()
@@ -456,10 +457,12 @@ def parse_race_card(
         race_number_image = require_element(race_number_element.find(tag="img") if race_number_element else None)
         race_number = int(required_match(r"(\d+)レース", race_number_image.attrs.get("alt", ""))[0])
         start = required_match(r"発走時刻[：:]\s*(\d{1,2})時(\d{2})分", header_text)
-        course = required_match(r"コース[：:]\s*([\d,]+)メートル（(芝|ダート)[^）]*）", header_text)
-        declared_field_size = (
-            None if result_page else int(required_match(r"(\d+)頭", header_text)[0])
+        course = required_match(
+            r"コース[：:]\s*([\d,]+)\s*メートル\s*（\s*(芝|ダート)[^）]*）",
+            header_text,
         )
+        declared_field_match = None if result_page else re.search(r"(\d+)頭", header_text)
+        declared_field_size = int(declared_field_match.group(1)) if declared_field_match else None
         header_element = require_element(header)
         going_node = header_element.find(class_name="turf") or header_element.find(class_name="durt")
         going_text = required_text(going_node.find(class_name="txt") if going_node else None)
@@ -508,7 +511,7 @@ def parse_runner(row: Element) -> dict[str, Any]:
     gate_cell = require_element(row.find(class_name="waku"))
     gate_image = require_element(gate_cell.find(tag="img"))
     age_text = required_text(row.find(class_name="age"))
-    age = required_match(r"(牡|牝|セン|騸)(\d+)", age_text)
+    age = required_match(r"(牡|牝|セン|せん|騸)(\d+)", age_text)
     status_text = " ".join(filter(None, (
         required_text(row.find(class_name="status"), optional=True),
         required_text(row.find(tag="td", class_name="place"), optional=True),
@@ -516,15 +519,19 @@ def parse_runner(row: Element) -> dict[str, Any]:
     status = "取消" if "取消" in status_text else "除外" if "除外" in status_text else "出走"
     gate = int(required_match(r"枠(\d+)(?:番|\D|$)", gate_image.attrs.get("alt", ""))[0])
     runner_age = int(age[1])
+    jockey_cell = row.find(tag="td", class_name="jockey")
+    assigned_weight_element = jockey_cell.find(class_name="weight") if jockey_cell else None
+    if assigned_weight_element is None:
+        assigned_weight_element = row.find(class_name="weight")
     assigned_weight = float(required_match(
-        r"([\d.]+)(?:\s*kg)?", required_text(row.find(class_name="weight")), re.I,
+        r"([\d.]+)(?:\s*kg)?", required_text(assigned_weight_element), re.I,
     )[0])
     horse_name_element = row.find(class_name="name") or row.find(tag="td", class_name="horse")
     runner = {
         "gate": gate,
         "horse_number": int(required_text(row.find(class_name="num"))),
         "horse_name": required_text(horse_name_element),
-        "age": runner_age, "sex": "セン" if age[0] == "騸" else age[0],
+        "age": runner_age, "sex": "セン" if age[0] in {"せん", "騸"} else age[0],
         "assigned_weight": assigned_weight,
         "status": status,
     }
@@ -575,9 +582,8 @@ def parse_odds_source_identity(url: str) -> dict[str, str | int]:
 
 
 def parse_jra_odds_page(body: bytes, content_type: str) -> list[dict[str, float | int]]:
-    charset_match = re.search(r"charset=([\w-]+)", content_type)
     try:
-        text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+        text = decode_html(body, content_type)
         parser = _TreeParser()
         parser.feed(text)
         table = next(
@@ -588,10 +594,19 @@ def parse_jra_odds_page(body: bytes, content_type: str) -> list[dict[str, float 
         odds: list[dict[str, float | int]] = []
         for row in rows:
             cells = row.find_all(tag="td")
-            offset = 1 if required_text(cells[0]).startswith("枠") else 0
-            horse_number = int(required_text(cells[offset]))
-            win_odds = float(required_text(cells[offset + 2]))
-            place_match = re.fullmatch(r"([\d.]+)\s*-\s*([\d.]+)", required_text(cells[offset + 3]))
+            number_cell = row.find(tag="td", class_name="num")
+            win_cell = row.find(tag="td", class_name="odds_tan")
+            place_cell = row.find(tag="td", class_name="odds_fuku")
+            if number_cell is not None and win_cell is not None and place_cell is not None:
+                horse_number = int(required_text(number_cell))
+                win_odds = float(required_text(win_cell))
+                place_text = required_text(place_cell)
+            else:
+                offset = 1 if required_text(cells[0]).startswith("枠") else 0
+                horse_number = int(required_text(cells[offset]))
+                win_odds = float(required_text(cells[offset + 2]))
+                place_text = required_text(cells[offset + 3])
+            place_match = re.fullmatch(r"([\d.]+)\s*-\s*([\d.]+)", place_text)
             if place_match is None:
                 raise ValueError("place_range")
             minimum, maximum = float(place_match.group(1)), float(place_match.group(2))
@@ -608,8 +623,7 @@ def parse_jra_odds_page(body: bytes, content_type: str) -> list[dict[str, float 
 
 
 def parse_jra_odds_update_time(body: bytes, content_type: str, source_url: str) -> str | None:
-    charset_match = re.search(r"charset=([\w-]+)", content_type)
-    text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+    text = decode_html(body, content_type)
     match = re.search(r"(?:オッズ)?更新(?:時刻|日時)?\s*[：:]\s*(\d{1,2})時(\d{2})分", text)
     if match is None:
         return None
@@ -624,8 +638,7 @@ def parse_jra_odds_update_time(body: bytes, content_type: str, source_url: str) 
 
 
 def validate_odds_page_identity(body: bytes, content_type: str, source_url: str) -> None:
-    charset_match = re.search(r"charset=([\w-]+)", content_type)
-    text = body.decode(charset_match.group(1) if charset_match else "utf-8")
+    text = decode_html(body, content_type)
     page = re.search(
         r"(\d{4})年(\d{1,2})月(\d{1,2})日.*?(\d+)回(札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉|架空)(\d+)日.*?(\d+)レース",
         text, re.S,
@@ -646,6 +659,17 @@ def required_text(element: Element | None, optional: bool = False) -> str:
     if not value and not optional:
         raise ValueError("required")
     return value
+
+
+def decode_html(body: bytes, content_type: str) -> str:
+    charset_match = re.search(r"charset=([\w-]+)", content_type)
+    meta_match = re.search(br"charset=[\"']?([\w-]+)", body[:4096], re.I)
+    charset = charset_match.group(1) if charset_match else (
+        meta_match.group(1).decode("ascii") if meta_match else "cp932"
+    )
+    if charset.lower().replace("_", "-") in {"shift-jis", "shiftjis", "sjis", "x-sjis"}:
+        charset = "cp932"
+    return body.decode(charset)
 
 
 def require_element(element: Element | None) -> Element:

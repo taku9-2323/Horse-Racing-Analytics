@@ -75,6 +75,49 @@ def test_user_acquires_and_registers_a_fictional_jra_race_card(tmp_path: Path) -
     assert fetcher.urls == ["https://www.jra.go.jp/robots.txt", URL]
 
 
+def test_user_acquires_current_jra_card_without_declared_headcount(tmp_path: Path) -> None:
+    current_page = (FIXTURE
+        .replace(b'<span class="field_size">2\xe9\xa0\xad</span>', b"")
+        .replace(
+            '<span>\u30b3\u30fc\u30b9\uff1a1,800\u30e1\u30fc\u30c8\u30eb\uff08\u829d\u30fb\u53f3\uff09</span>'.encode(),
+            ('<div class="cell course"><span class="cap">\u30b3\u30fc\u30b9\uff1a</span>1,800'
+             '<span class="unit">\u30e1\u30fc\u30c8\u30eb</span><span class="detail">\uff08\u829d\u30fb\u53f3\uff09</span></div>').encode(),
+        )
+        .replace(
+            '<span class="name"><a>\u30a2\u30b5\u30d2\u30ce\u30bd\u30e9</a></span></span></td>'.encode(),
+            ('<span class="name"><a>\u30a2\u30b5\u30d2\u30ce\u30bd\u30e9</a></span></span>'
+             '<div class="cell weight">466kg<span>(-6)</span></div></td>').encode(),
+        )
+        .replace('<p class="age">\u725d4/\u9ed2\u9e7f</p>'.encode(), '<p class="age">\u305b\u30934/\u9ed2\u9e7f</p>'.encode()))
+    app = create_app(tmp_path / "current.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+        status=200, final_url=URL,
+        headers={"content-type": "text/html; charset=utf-8"}, body=current_page,
+    )))
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+
+    assert response.status_code == 201, response.text
+    assert response.json()["race"]["field_size"] == 2
+    assert response.json()["runners"][1]["sex"] == "\u30bb\u30f3"
+
+
+def test_user_acquires_cp932_page_declared_as_shift_jis(tmp_path: Path) -> None:
+    cp932_page = (FIXTURE.decode()
+        .replace('charset="utf-8"', 'charset="Shift_JIS"')
+        .replace("</body>", "<p>\u9ad9</p></body>")
+        .encode("cp932"))
+    app = create_app(tmp_path / "cp932.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+        status=200, final_url=URL, headers={"content-type": "text/html"}, body=cp932_page,
+    )))
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+
+    assert response.status_code == 201, response.text
+    assert response.json()["race"]["race_number"] == 7
+
+
 def test_invalid_runner_set_is_rejected_without_registering_a_card(tmp_path: Path) -> None:
     malformed = FIXTURE.replace(b'<td class="num">2</td>', b'<td class="num">1</td>')
     fetcher = FakeFetcher(FetchResponse(
@@ -294,9 +337,13 @@ def test_parser_v1_source_ids_are_canonicalized_during_database_upgrade(tmp_path
 
 def test_past_race_metadata_and_runners_are_acquired_from_the_result_page(tmp_path: Path) -> None:
     database_path = tmp_path / "past-result.sqlite3"
+    current_result = RESULT_FIXTURE.replace(
+        b'<td class="weight">56.0</td>',
+        b'<td class="jockey">Sample Jockey</td><td class="weight">56.0</td>',
+    )
     app = create_app(database_path, jra_fetcher=FakeFetcher(FetchResponse(
         status=200, final_url=RESULT_URL,
-        headers={"content-type": "text/html; charset=utf-8"}, body=RESULT_FIXTURE,
+        headers={"content-type": "text/html; charset=utf-8"}, body=current_result,
     )))
 
     with TestClient(app) as client:

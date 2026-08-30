@@ -19,9 +19,13 @@ ODDS_HTML = """<!doctype html><h1>単勝・複勝オッズ（馬番順） 2026�
 
 
 class JraFetcher:
-    def __init__(self, odds_html: bytes = ODDS_HTML, odds_status: int = 200) -> None:
+    def __init__(
+        self, odds_html: bytes = ODDS_HTML, odds_status: int = 200,
+        odds_content_type: str = "text/html; charset=utf-8",
+    ) -> None:
         self.odds_html = odds_html
         self.odds_status = odds_status
+        self.odds_content_type = odds_content_type
         self.urls: list[str] = []
 
     def __call__(self, url: str) -> FetchResponse:
@@ -30,7 +34,8 @@ class JraFetcher:
             return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
         body = self.odds_html if "accessO.html" in url else CARD_HTML
         status = self.odds_status if "accessO.html" in url else 200
-        return FetchResponse(status, url, {"content-type": "text/html; charset=utf-8"}, body)
+        content_type = self.odds_content_type if "accessO.html" in url else "text/html; charset=utf-8"
+        return FetchResponse(status, url, {"content-type": content_type}, body)
 
 
 def test_parses_win_and_place_ranges_from_jra_horse_number_odds_table() -> None:
@@ -90,6 +95,36 @@ def test_registers_a_jra_card_and_odds_as_one_analysis_race_atomically(tmp_path:
         assert connection.execute("SELECT COUNT(*) FROM races").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM odds_snapshots").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM jra_odds_observations").fetchone() == (1,)
+
+
+def test_registers_shift_jis_odds_when_http_header_omits_charset(tmp_path: Path) -> None:
+    current_odds_html = """<!doctype html><html><head><meta charset="Shift_JIS"></head><body>
+    <h1>単勝・複勝オッズ（馬番順） 2026年8月30日（日曜）3回架空2日 7レース</h1>
+    <table><caption>単勝・複勝オッズ（馬番順）</caption>
+    <tr><th class="waku">枠</th><th class="num">馬番</th><th class="horse">馬名</th>
+    <th class="odds_tan">単勝</th><th class="odds_fuku">複勝（3着払い）</th></tr>
+    <tr><td class="waku"><img alt="枠1白"></td><td class="num">1</td>
+    <td class="horse">アサヒノソラ</td><td class="odds_tan">18.1</td>
+    <td class="odds_fuku"><span>2.8</span><span>-</span><span>4.4</span></td></tr>
+    <tr><td class="waku"><img alt="枠2黒"></td><td class="num">2</td>
+    <td class="horse">ツキノミチ</td><td class="odds_tan">2.5</td>
+    <td class="odds_fuku"><span>1.2</span><span>-</span><span>1.4</span></td></tr>
+    </table></body></html>"""
+    fetcher = JraFetcher(
+        odds_html=current_odds_html.encode("shift_jis"),
+        odds_content_type="text/html",
+    )
+    app = create_app(tmp_path / "shift-jis.sqlite3", jra_fetcher=fetcher)
+
+    with TestClient(app) as client:
+        card = client.post("/api/acquisition/jra/race-card", json={"url": CARD_URL}).json()
+        response = client.post(
+            f"/api/acquisition/jra/race-cards/{card['card_id']}/odds",
+            json={"url": FICTIONAL_ODDS_URL},
+        )
+
+    assert response.status_code == 201, response.text
+    assert [runner["horse_number"] for runner in response.json()["runners"]] == [1, 2]
 
 
 def test_reacquisition_adds_a_snapshot_and_uses_the_recent_url_cache(tmp_path: Path) -> None:
