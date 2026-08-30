@@ -19,6 +19,7 @@ ALLOWED_HOST = "www.jra.go.jp"
 ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
 PARSER_VERSION = "jra-race-entry/2"
 ODDS_PARSER_VERSION = "jra-odds/2"
+RESULT_PARSER_VERSION = "jra-result/1"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 SOURCE_RACE_ID_PATTERN = re.compile(
@@ -103,6 +104,10 @@ class RaceCardRequest(BaseModel):
 
 
 class OddsPageRequest(BaseModel):
+    url: str
+
+
+class ResultPageRequest(BaseModel):
     url: str
 
 
@@ -381,6 +386,58 @@ class JraOddsAcquirer:
         return odds, {"url": url, "source_race_id": identity["source_race_id"], "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "source_updated_at": source_updated_at, "parser_version": ODDS_PARSER_VERSION, "response_sha256": digest, "validation_status": "valid"}
 
 
+class JraResultAcquirer:
+    def __init__(self, fetcher: Callable[[str], FetchResponse]) -> None:
+        self._fetcher = fetcher
+        self._memory_cache: dict[str, tuple[datetime, bytes, str]] = {}
+
+    def acquire(self, url: str, received_at: datetime) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        validate_result_url(url)
+        cached = self._memory_cache.get(url)
+        if cached is not None and received_at - cached[0] > timedelta(minutes=15):
+            del self._memory_cache[url]
+            cached = None
+        if cached is None:
+            robots = self._fetcher(ROBOTS_URL)
+            if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
+                raise audited_error(
+                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                    503, url, robots.body, received_at, RESULT_PARSER_VERSION,
+                )
+            response = self._fetcher(url)
+            if (response.status != 200 or not same_allowed_race_card_url(response.final_url, url)
+                    or not response.headers.get("content-type", "").lower().startswith("text/html")
+                    or len(response.body) > MAX_RESPONSE_BYTES):
+                raise audited_error(
+                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                    503, url, response.body, received_at, RESULT_PARSER_VERSION,
+                )
+            body = response.body
+            content_type = response.headers.get("content-type", "")
+            response_received_at = received_at
+            self._memory_cache[url] = (response_received_at, body, content_type)
+        else:
+            response_received_at, body, content_type = cached
+        digest = sha256(body).hexdigest()
+        try:
+            results, source_updated_at = parse_jra_result_page(body, content_type, url)
+        except AcquisitionError as error:
+            error.observation = {
+                "url": url,
+                "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "parser_version": RESULT_PARSER_VERSION,
+                "response_sha256": digest, "validation_status": "invalid", "error_code": error.code,
+            }
+            raise
+        identity = parse_source_race_identity(url)
+        return results, {
+            "url": url, "source_race_id": identity["source_race_id"],
+            "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "source_updated_at": source_updated_at, "parser_version": RESULT_PARSER_VERSION,
+            "response_sha256": digest, "validation_status": "valid",
+        }
+
+
 def validate_race_card_url(url: str) -> None:
     parsed = urlparse(url)
     query = parse_qs(parsed.query, strict_parsing=True)
@@ -397,6 +454,16 @@ def validate_race_card_url(url: str) -> None:
             or parsed.path != expected_path or parsed.fragment or set(query) != {"CNAME"}
             or valid_cname is None):
         raise AcquisitionError("url_not_allowed", "許可されたJRAレースページURLを指定してください。", 422)
+
+
+def validate_result_url(url: str) -> None:
+    validate_race_card_url(url)
+    try:
+        identity = parse_source_race_identity(url)
+    except ValueError as error:
+        raise AcquisitionError("url_not_allowed", "許可されたJRA結果ページURLを指定してください。", 422) from error
+    if identity["resource"] != "result":
+        raise AcquisitionError("url_not_allowed", "許可されたJRA結果ページURLを指定してください。", 422)
 
 
 def same_allowed_race_card_url(left: str, right: str) -> bool:
@@ -580,6 +647,113 @@ def parse_source_race_identity(url: str) -> dict[str, str | int]:
         "race_number": int(match.group("race")),
         "race_date": f"{date_value[:4]}-{date_value[4:6]}-{date_value[6:]}",
     }
+
+
+def parse_jra_result_page(
+    body: bytes, content_type: str, source_url: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        _, validated_runners, source_updated_at = parse_race_card(body, content_type, source_url)
+        text = decode_html(body, content_type)
+        parser = _TreeParser()
+        parser.feed(text)
+        result_root = require_element(parser.root.find(element_id="race_result"))
+        result_table = next(
+            table for table in result_root.find_all(tag="table")
+            if table.find(tag="th", class_name="place") is not None
+            and table.find(tag="th", class_name="num") is not None
+            and table.closed
+        )
+        refund_area = require_element(result_root.find(class_name="refund_area"))
+        if not result_root.closed or not refund_area.closed:
+            raise ValueError("incomplete_result")
+
+        results: list[dict[str, Any]] = []
+        for row in result_table.find_all(tag="tr"):
+            number_cell = row.find(tag="td", class_name="num")
+            if number_cell is None:
+                continue
+            horse_number = int(required_text(number_cell))
+            place_text = required_text(row.find(tag="td", class_name="place"))
+            if place_text in {"取消", "除外"}:
+                status = place_text
+                finish_position = None
+            else:
+                status = "確定"
+                finish_position = int(place_text)
+            results.append({
+                "horse_number": horse_number, "finish_position": finish_position,
+                "status": status, "win_payout_per_100": 0, "place_payout_per_100": 0,
+            })
+
+        by_horse = {int(result["horse_number"]): result for result in results}
+        if len(by_horse) != len(results):
+            raise ValueError("duplicate_runner")
+        win_payouts = parse_result_payouts(refund_area.find(tag="li", class_name="win"))
+        place_payouts = parse_result_payouts(refund_area.find(tag="li", class_name="place"))
+        refund_numbers = parse_result_numbers(refund_area.find(tag="li", class_name="refund"))
+        for horse_number, payout in win_payouts.items():
+            by_horse[horse_number]["win_payout_per_100"] = payout
+        for horse_number, payout in place_payouts.items():
+            by_horse[horse_number]["place_payout_per_100"] = payout
+
+        expected_numbers = {int(runner["horse_number"]) for runner in validated_runners}
+        if set(by_horse) != expected_numbers:
+            raise ValueError("runner_set")
+        confirmed = [result for result in results if result["status"] == "確定"]
+        finish_counts: dict[int, int] = {}
+        for result in confirmed:
+            position = int(result["finish_position"])
+            finish_counts[position] = finish_counts.get(position, 0) + 1
+        expected_position = 1
+        for position in sorted(finish_counts):
+            if position != expected_position:
+                raise ValueError("finish_sequence")
+            expected_position += finish_counts[position]
+        field_size = len(results)
+        place_positions = 0 if field_size <= 4 else 2 if field_size <= 7 else 3
+        expected_win = {int(result["horse_number"]) for result in confirmed if result["finish_position"] == 1}
+        expected_place = {
+            int(result["horse_number"]) for result in confirmed
+            if place_positions > 0 and int(result["finish_position"]) <= place_positions
+        }
+        expected_refunds = {
+            int(result["horse_number"]) for result in results if result["status"] in {"取消", "除外"}
+        }
+        if (set(win_payouts) != expected_win or set(place_payouts) != expected_place
+                or refund_numbers != expected_refunds):
+            raise ValueError("result_payout_mismatch")
+        return sorted(results, key=lambda item: int(item["horse_number"])), source_updated_at
+    except (AttributeError, IndexError, KeyError, LookupError, TypeError, UnicodeDecodeError, ValueError) as error:
+        raise AcquisitionError(
+            "result_validation_failed", "JRA結果・払戻ページを検証できませんでした。", 422,
+        ) from error
+
+
+def parse_result_payouts(section: Element | None) -> dict[int, int]:
+    if section is None:
+        return {}
+    payouts: dict[int, int] = {}
+    for line in section.find_all(class_name="line"):
+        horse_number = int(required_text(line.find(class_name="num")))
+        payout_text = required_text(line.find(class_name="yen"))
+        payout = int(required_match(r"([\d,]+)\s*円", payout_text)[0].replace(",", ""))
+        if horse_number in payouts or payout <= 0:
+            raise ValueError("payout")
+        payouts[horse_number] = payout
+    return payouts
+
+
+def parse_result_numbers(section: Element | None) -> set[int]:
+    if section is None:
+        return set()
+    numbers = {
+        int(required_text(line.find(class_name="num")))
+        for line in section.find_all(class_name="line")
+    }
+    if len(numbers) != len(section.find_all(class_name="line")):
+        raise ValueError("refund_numbers")
+    return numbers
 
 
 def validate_odds_url(url: str) -> None:

@@ -24,6 +24,8 @@ export default function BettingPanel({ raceId, runners }: Props) {
   const [betType, setBetType] = useState<"win" | "place">("win");
   const [amountYen, setAmountYen] = useState(100);
   const [resultFile, setResultFile] = useState<File | null>(null);
+  const [jraResultUrl, setJraResultUrl] = useState("");
+  const [jraResultLoading, setJraResultLoading] = useState(false);
   const [correctionReason, setCorrectionReason] = useState("");
   const [message, setMessage] = useState("");
 
@@ -74,6 +76,28 @@ export default function BettingPanel({ raceId, runners }: Props) {
     }
   };
 
+  const acquireJraResult = async () => {
+    if (!jraResultUrl) return;
+    setJraResultLoading(true);
+    try {
+      const response = await fetch(`/api/races/${raceId}/results/acquire`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: jraResultUrl }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const payload = (await response.json()) as {
+        result: { version: number }; source: { parser_version: string }; changes: string[];
+      };
+      await loadLedger();
+      const correction = payload.changes.length ? "訂正版を反映し、" : "";
+      setMessage(`JRA結果を取得し、${correction}結果 v${payload.result.version} で精算しました（${payload.source.parser_version}）。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "JRA結果を取得できませんでした。CSV取込を使用してください。");
+    } finally {
+      setJraResultLoading(false);
+    }
+  };
+
   const yen = (value: number) => `¥${value.toLocaleString("ja-JP")}`;
   const settledYen = (value: number | null) => value === null ? "未確定" : yen(value);
   const rate = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(2)}%`;
@@ -100,6 +124,11 @@ export default function BettingPanel({ raceId, runners }: Props) {
             <p className="fixed-decision-type">購入区分: 候補外裁量</p>
             <label>購入額（円）<input type="number" min="100" step="100" value={amountYen} onChange={(event) => setAmountYen(Number(event.target.value))} /></label>
             <button type="button" onClick={() => void createBet()}>実購入を登録</button>
+          </div>
+          <div className="result-import">
+            <label htmlFor={`jra-result-url-${raceId}`}>JRAレース結果URL</label>
+            <input id={`jra-result-url-${raceId}`} type="url" value={jraResultUrl} onChange={(event) => setJraResultUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessS.html?CNAME=..." />
+            <button type="button" disabled={!jraResultUrl || jraResultLoading} onClick={() => void acquireJraResult()}>{jraResultLoading ? "取得・検証中…" : "JRA結果を取得して精算"}</button>
           </div>
           <div className="result-import">
             <label htmlFor={`result-csv-${raceId}`}>結果CSVファイル</label>

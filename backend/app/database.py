@@ -352,6 +352,26 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '9' WHERE key = 'schema_version'"
             )
+            result_version_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(result_versions)").fetchall()
+            }
+            if "change_summary_json" not in result_version_columns:
+                connection.execute(
+                    "ALTER TABLE result_versions ADD COLUMN change_summary_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS jra_result_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
+                    source_url TEXT NOT NULL, source_race_id TEXT NOT NULL,
+                    received_at TEXT NOT NULL, source_updated_at TEXT,
+                    parser_version TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                    validation_status TEXT NOT NULL CHECK (validation_status = 'valid')
+                )"""
+            )
+            connection.execute(
+                "UPDATE application_metadata SET value = '10' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -359,7 +379,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("9",):
+        if row != ("10",):
             raise RuntimeError("SQLite schema is not ready")
 
     def register_jra_race_with_odds(
@@ -1086,6 +1106,7 @@ class SqliteDatabase:
     def create_result_version(
         self, race_id: int, results: list[dict[str, Any]], received_at: str,
         correction_reason: str | None = None,
+        source_observation: dict[str, Any] | None = None,
     ) -> int:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
@@ -1096,6 +1117,27 @@ class SqliteDatabase:
                 "SELECT * FROM result_versions WHERE race_id = ? AND status = 'active'",
                 (race_id,),
             ).fetchone()
+            if source_observation is not None:
+                source_ids = {
+                    str(row[0]) for row in connection.execute(
+                        """SELECT card.source_race_id
+                           FROM jra_race_registrations AS registration
+                           JOIN acquired_race_cards AS card ON card.id = registration.card_id
+                           WHERE registration.race_id = ?""",
+                        (race_id,),
+                    ).fetchall()
+                }
+                if str(source_observation["source_race_id"]) not in source_ids:
+                    raise ValueError("result_race_mismatch")
+            runner_numbers = {
+                int(row[0]) for row in connection.execute(
+                    "SELECT horse_number FROM runners WHERE race_id = ?", (race_id,)
+                ).fetchall()
+            }
+            supplied_numbers = {int(result["horse_number"]) for result in results}
+            if supplied_numbers != runner_numbers:
+                raise ValueError("result_runner_mismatch")
+            changes: list[str] = []
             if active is not None and correction_reason is None:
                 stored_results = connection.execute(
                     """
@@ -1122,18 +1164,27 @@ class SqliteDatabase:
                     for result in stored_results
                 ]
                 if supplied == stored:
+                    if source_observation is not None:
+                        self._insert_jra_result_observation(
+                            connection, int(active["id"]), source_observation,
+                        )
                     return int(active["id"])
-                raise ValueError("result_import_conflict")
+                if source_observation is None:
+                    raise ValueError("result_import_conflict")
+                correction_reason = "JRA公開ページの再取得で公式結果の変更を検出"
+                stored_by_horse = {int(item[0]): item for item in stored}
+                supplied_by_horse = {int(item[0]): item for item in supplied}
+                fields = ("finish_position", "status", "win_payout_per_100", "place_payout_per_100")
+                for horse_number in sorted(supplied_by_horse):
+                    before = stored_by_horse[horse_number]
+                    after = supplied_by_horse[horse_number]
+                    for index, field_name in enumerate(fields, start=1):
+                        if before[index] != after[index]:
+                            changes.append(
+                                f"{horse_number}番 {field_name}: {before[index]}→{after[index]}"
+                            )
             if active is None and correction_reason is not None:
                 raise ValueError("result_not_imported")
-            runner_numbers = {
-                int(row[0]) for row in connection.execute(
-                    "SELECT horse_number FROM runners WHERE race_id = ?", (race_id,)
-                ).fetchall()
-            }
-            supplied_numbers = {int(result["horse_number"]) for result in results}
-            if supplied_numbers != runner_numbers:
-                raise ValueError("result_runner_mismatch")
             field_size = len(runner_numbers)
             place_positions = 0 if field_size <= 4 else 2 if field_size <= 7 else 3
             for result in results:
@@ -1163,10 +1214,11 @@ class SqliteDatabase:
                 """
                 INSERT INTO result_versions (
                     race_id, version, received_at, status, correction_reason,
-                    supersedes_result_version_id
-                ) VALUES (?, ?, ?, 'active', ?, ?)
+                    supersedes_result_version_id, change_summary_json
+                ) VALUES (?, ?, ?, 'active', ?, ?, ?)
                 """,
-                (race_id, version, received_at, correction_reason, supersedes_id),
+                (race_id, version, received_at, correction_reason, supersedes_id,
+                 json.dumps(changes, ensure_ascii=False)),
             )
             result_version_id = cursor.lastrowid
             if result_version_id is None:
@@ -1206,7 +1258,28 @@ class SqliteDatabase:
                     """,
                     (bet["id"], result_version_id, stake, payout, refund, payout + refund - stake),
                 )
+            if source_observation is not None:
+                self._insert_jra_result_observation(
+                    connection, int(result_version_id), source_observation,
+                )
         return int(result_version_id)
+
+    @staticmethod
+    def _insert_jra_result_observation(
+        connection: sqlite3.Connection, result_version_id: int, observation: dict[str, Any],
+    ) -> None:
+        connection.execute(
+            """INSERT INTO jra_result_observations (
+                result_version_id, source_url, source_race_id, received_at, source_updated_at,
+                parser_version, response_sha256, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                result_version_id, observation["url"], observation["source_race_id"],
+                observation["received_at"], observation["source_updated_at"],
+                observation["parser_version"], observation["response_sha256"],
+                observation["validation_status"],
+            ),
+        )
 
     def list_result_versions(
         self, race_id: int,

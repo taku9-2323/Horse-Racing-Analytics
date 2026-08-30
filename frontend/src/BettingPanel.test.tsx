@@ -66,4 +66,57 @@ describe("bet and result workflow", () => {
     expect(within(summary).getByText("回収率 420.00%")).toBeTruthy();
     expect(screen.getByText("候補外裁量 購入額 ¥200 / 払戻額 ¥840 / 返還額 ¥0 / 損益 ¥640 / 回収率 420.00%")).toBeTruthy();
   });
+
+  it("acquires the selected race result from JRA and refreshes settlement", async () => {
+    const emptyLedger = {
+      bets: [], result_version: null, settlements: [], totals: totals(),
+      by_decision_type: { candidate: totals(), discretionary: totals() },
+    };
+    const settledLedger = {
+      ...emptyLedger, result_version: { id: 3, version: 1 },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(emptyLedger))
+      .mockResolvedValueOnce(jsonResponse({
+        result: { id: 3, version: 1 }, changes: [],
+        source: { parser_version: "jra-result/1" },
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse(settledLedger));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<BettingPanel raceId={7} runners={[{ horse_number: 1, horse_name: "アカツキ" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "購入・収支を表示" }));
+    await screen.findByText("結果未取込");
+    fireEvent.change(screen.getByLabelText("JRAレース結果URL"), {
+      target: { value: "https://www.jra.go.jp/JRADB/accessS.html?CNAME=result" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "JRA結果を取得して精算" }));
+
+    expect(await screen.findByText("JRA結果を取得し、結果 v1 で精算しました（jra-result/1）。")).toBeTruthy();
+    expect(screen.getByText("結果 v1 精算済み")).toBeTruthy();
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/races/7/results/acquire", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ url: "https://www.jra.go.jp/JRADB/accessS.html?CNAME=result" }),
+    }));
+  });
+
+  it("keeps the result CSV fallback visible when JRA acquisition stops", async () => {
+    const emptyLedger = {
+      bets: [], result_version: null, settlements: [], totals: totals(),
+      by_decision_type: { candidate: totals(), discretionary: totals() },
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse(emptyLedger))
+      .mockResolvedValueOnce(jsonResponse({
+        detail: { code: "acquisition_stopped", message: "JRAからの取得を停止しました。CSV取込を使用してください。" },
+      }, 503)));
+
+    render(<BettingPanel raceId={7} runners={[{ horse_number: 1, horse_name: "アカツキ" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "購入・収支を表示" }));
+    await screen.findByText("結果未取込");
+    fireEvent.change(screen.getByLabelText("JRAレース結果URL"), { target: { value: "https://www.jra.go.jp/JRADB/accessS.html?CNAME=result" } });
+    fireEvent.click(screen.getByRole("button", { name: "JRA結果を取得して精算" }));
+
+    expect(await screen.findByText("JRAからの取得を停止しました。CSV取込を使用してください。")).toBeTruthy();
+    expect(screen.getByLabelText("結果CSVファイル")).toBeTruthy();
+  });
 });

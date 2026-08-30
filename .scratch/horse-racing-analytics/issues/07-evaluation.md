@@ -10,7 +10,7 @@ triage: ready-for-agent
 
 **Blocked by:** 05 — 文献由来の分析タグを管理する、06 — 実購入と結果を記録する、13 — JRA公開ページから結果・払戻を取得する
 
-**Status:** blocked by 13
+**Status:** ready-for-agent
 
 - [ ] 単勝市場基準のBrierスコアが全出走馬から計算される
 - [ ] 確率帯ごとの件数、平均予測確率、実的中率が表示される

@@ -1,5 +1,6 @@
 import csv
 from io import StringIO
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -43,6 +44,7 @@ class ResultVersion(BaseModel):
     received_at: str
     status: str
     correction_reason: str | None
+    changes: list[str]
     runners: list[RunnerResult]
 
 
@@ -183,6 +185,7 @@ def result_response(version: Any, runners: list[Any]) -> ResultVersion:
         id=int(version["id"]), race_id=int(version["race_id"]), version=int(version["version"]),
         received_at=str(version["received_at"]), status=str(version["status"]),
         correction_reason=version["correction_reason"],
+        changes=json.loads(str(version["change_summary_json"])),
         runners=[RunnerResult(
             horse_number=int(row["horse_number"]), finish_position=row["finish_position"],
             status=row["status"], win_payout_per_100=int(row["win_payout_per_100"]),

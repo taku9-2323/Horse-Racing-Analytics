@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 from threading import Lock
 from datetime import datetime, timezone
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -34,8 +34,8 @@ from app.predictions import (
 )
 from app.jra_acquisition import (
     AcquiredOddsRunner, AcquiredOddsSnapshot, AcquiredRaceCard, AcquiredRaceSummary, AcquiredRunner, AcquisitionError,
-    AcquisitionObservation, FetchResponse, JraOddsAcquirer, JraRaceCardAcquirer, OddsPageRequest,
-    RaceCardRequest, SourceObservation, default_fetcher,
+    AcquisitionObservation, FetchResponse, JraOddsAcquirer, JraRaceCardAcquirer, JraResultAcquirer,
+    OddsPageRequest, RaceCardRequest, ResultPageRequest, SourceObservation, default_fetcher,
 )
 
 
@@ -53,6 +53,12 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     api: ComponentHealth
     database: DatabaseHealth
+
+
+class AcquiredJraResult(BaseModel):
+    result: ResultVersion
+    source: SourceObservation
+    changes: list[str]
 
 
 def default_database_path() -> Path:
@@ -99,6 +105,7 @@ def create_app(
         jra_fetcher or default_fetcher, resolved_database_path.parent / "jra-html-cache",
     )
     odds_acquirer = JraOddsAcquirer(jra_fetcher or default_fetcher)
+    result_acquirer = JraResultAcquirer(jra_fetcher or default_fetcher)
 
     def acquired_card_response(card: sqlite3.Row, runners: list[sqlite3.Row]) -> AcquiredRaceCard:
         return AcquiredRaceCard(
@@ -409,6 +416,50 @@ def create_app(
         if not reason.strip():
             raise HTTPException(status_code=422, detail={"code": "blank_correction_reason", "message": "訂正理由を入力してください。"})
         return save_results(race_id, csv_content, reason.strip())
+
+    @app.post(
+        "/api/races/{race_id}/results/acquire", response_model=AcquiredJraResult, status_code=201,
+    )
+    def acquire_jra_result(race_id: int, request: ResultPageRequest) -> AcquiredJraResult:
+        observation: dict[str, Any] | None = None
+        try:
+            results, observation = result_acquirer.acquire(request.url, current_time())
+            result_version_id = database.create_result_version(
+                race_id, results, utc_iso(current_time()), source_observation=observation,
+            )
+        except AcquisitionError as error:
+            if error.observation is not None:
+                database.save_acquisition_failure(error.observation)
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+        except LookupError as error:
+            raise HTTPException(
+                status_code=404, detail={"code": str(error), "message": "レースが見つかりません。"},
+            ) from error
+        except ValueError as error:
+            if observation is not None:
+                failed = dict(observation)
+                failed.update(validation_status="invalid", error_code=str(error))
+                database.save_acquisition_failure(failed)
+            messages = {
+                "result_race_mismatch": "JRA結果ページが選択したレースと一致しません。",
+                "result_runner_mismatch": "結果の馬番集合が登録済みレースと一致しません。",
+                "result_invalid_position": "着順が出走頭数の範囲外です。",
+                "result_payout_mismatch": "着順・頭数規則と公式払戻の組み合わせを確認してください。",
+            }
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(error), "message": messages.get(str(error), "JRA結果を登録できません。")},
+            ) from error
+        stored = database.get_result_version(result_version_id)
+        if stored is None or observation is None:
+            raise HTTPException(status_code=500, detail="登録したJRA結果を読み込めません。")
+        result = result_response(*stored)
+        return AcquiredJraResult(
+            result=result, source=SourceObservation(**observation), changes=result.changes,
+        )
 
     @app.get("/api/races/{race_id}/results", response_model=list[ResultVersion])
     def list_results(race_id: int) -> list[ResultVersion]:
