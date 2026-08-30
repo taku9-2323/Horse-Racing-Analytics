@@ -17,7 +17,8 @@ from pydantic import BaseModel
 
 ALLOWED_HOST = "www.jra.go.jp"
 ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
-PARSER_VERSION = "jra-race-entry/1"
+PARSER_VERSION = "jra-race-entry/2"
+ODDS_PARSER_VERSION = "jra-odds/2"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 SOURCE_RACE_ID_PATTERN = re.compile(
@@ -135,7 +136,6 @@ class Element:
     tag: str
     attrs: dict[str, str]
     children: list["Element"] = field(default_factory=list)
-    fragments: list[str] = field(default_factory=list)
     content: list["Element | str"] = field(default_factory=list)
     closed: bool = False
 
@@ -192,8 +192,17 @@ class _TreeParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if data.strip():
-            self._stack[-1].fragments.append(data)
             self._stack[-1].content.append(data)
+
+
+def elements_are_adjacent_siblings(root: Element, earlier: Element, later: Element) -> bool:
+    for index, child in enumerate(root.children[:-1]):
+        if child is earlier and root.children[index + 1] is later:
+            return True
+    for child in root.children:
+        if elements_are_adjacent_siblings(child, earlier, later):
+            return True
+    return False
 
 
 def default_fetcher(url: str) -> FetchResponse:
@@ -242,19 +251,19 @@ class JraRaceCardAcquirer:
         if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
             raise audited_error(
                 "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
-                503, url, robots.body, received_at,
+                503, url, robots.body, received_at, PARSER_VERSION,
             )
         response = self._fetcher(url)
         if response.status != 200 or not same_allowed_race_card_url(response.final_url, url):
             raise audited_error(
                 "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
-                503, url, response.body, received_at,
+                503, url, response.body, received_at, PARSER_VERSION,
             )
         content_type = response.headers.get("content-type", "").lower()
         if not content_type.startswith("text/html") or len(response.body) > MAX_RESPONSE_BYTES:
             raise audited_error(
                 "unexpected_response", "想定外の応答です。CSV取込を使用してください。",
-                503, url, response.body, received_at,
+                503, url, response.body, received_at, PARSER_VERSION,
             )
         return self._normalize(url, resource, response.body, content_type, received_at)
 
@@ -351,11 +360,11 @@ class JraOddsAcquirer:
         else:
             robots = self._fetcher(ROBOTS_URL)
             if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
-                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, robots.body, received_at)
+                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, robots.body, received_at, ODDS_PARSER_VERSION)
             response = self._fetcher(url)
             allowed_final_urls = {url, f"https://{ALLOWED_HOST}/JRADB/accessO.html"}
             if response.status != 200 or response.final_url not in allowed_final_urls or not response.headers.get("content-type", "").lower().startswith("text/html"):
-                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, response.body, received_at)
+                raise audited_error("acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。", 503, url, response.body, received_at, ODDS_PARSER_VERSION)
             body = response.body
             content_type = response.headers.get("content-type", "")
             self._memory_cache[url] = (received_at, body, content_type)
@@ -366,10 +375,10 @@ class JraOddsAcquirer:
             validate_odds_page_identity(body, content_type, url)
             source_updated_at = parse_jra_odds_update_time(body, content_type, url)
         except AcquisitionError as error:
-            error.observation = {"url": url, "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "parser_version": "jra-odds/1", "response_sha256": digest, "validation_status": "invalid", "error_code": error.code}
+            error.observation = {"url": url, "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "parser_version": ODDS_PARSER_VERSION, "response_sha256": digest, "validation_status": "invalid", "error_code": error.code}
             raise
         identity = parse_odds_source_identity(url)
-        return odds, {"url": url, "source_race_id": identity["source_race_id"], "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "source_updated_at": source_updated_at, "parser_version": "jra-odds/1", "response_sha256": digest, "validation_status": "valid"}
+        return odds, {"url": url, "source_race_id": identity["source_race_id"], "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "source_updated_at": source_updated_at, "parser_version": ODDS_PARSER_VERSION, "response_sha256": digest, "validation_status": "valid"}
 
 
 def validate_race_card_url(url: str) -> None:
@@ -408,12 +417,13 @@ def same_allowed_race_card_url(left: str, right: str) -> bool:
 
 def audited_error(
     code: str, message: str, status_code: int, url: str, body: bytes, received_at: datetime,
+    parser_version: str,
 ) -> AcquisitionError:
     error = AcquisitionError(code, message, status_code)
     error.observation = {
         "url": url,
         "received_at": received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "parser_version": PARSER_VERSION, "response_sha256": sha256(body).hexdigest(),
+        "parser_version": parser_version, "response_sha256": sha256(body).hexdigest(),
         "validation_status": "invalid", "error_code": code,
     }
     return error
@@ -439,16 +449,26 @@ def parse_race_card(
         raise AcquisitionError("race_card_validation_failed", "JRAレースページを検証できませんでした。", 422) from error
     parser = _TreeParser()
     parser.feed(text)
-    table = parser.root.find(element_id="syutsuba")
-    result_page = table is None
+    entry_container = parser.root.find(element_id="syutsuba")
+    result_page = entry_container is None
+    terminal_marker = None if result_page else parser.root.find(element_id="odds_area")
     if result_page:
         result_root = parser.root.find(element_id="race_result")
         table = result_root.find(tag="table") if result_root else None
+    else:
+        table = entry_container.find(tag="table") if entry_container else None
     header = table.find(class_name="race_header") if table else None
     date_element = table.find(class_name="date") if table else None
     rows = table.find_all(tag="tr") if table else []
     try:
-        if table is None or not table.closed:
+        if (table is None or not table.closed
+                or (not result_page and (entry_container is None
+                                          or not entry_container.closed
+                                          or terminal_marker is None
+                                          or not terminal_marker.closed
+                                          or not elements_are_adjacent_siblings(
+                                              parser.root, entry_container, terminal_marker,
+                                          )))):
             raise ValueError("incomplete_table")
         date_text = required_text(date_element)
         header_text = required_text(header)

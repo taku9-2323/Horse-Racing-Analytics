@@ -67,7 +67,7 @@ def test_user_acquires_and_registers_a_fictional_jra_race_card(tmp_path: Path) -
     assert payload["source"] == {
         "url": URL, "source_race_id": "JRA-20260830-99-03-02-07",
         "received_at": "2026-08-29T04:00:00Z",
-        "source_updated_at": None, "parser_version": "jra-race-entry/1",
+        "source_updated_at": None, "parser_version": "jra-race-entry/2",
         "response_sha256": payload["source"]["response_sha256"],
         "validation_status": "valid",
     }
@@ -100,6 +100,58 @@ def test_user_acquires_current_jra_card_without_declared_headcount(tmp_path: Pat
     assert response.status_code == 201, response.text
     assert response.json()["race"]["field_size"] == 2
     assert response.json()["runners"][1]["sex"] == "\u30bb\u30f3"
+
+
+def test_current_card_without_declared_headcount_requires_post_table_marker(tmp_path: Path) -> None:
+    incomplete_page = (FIXTURE
+        .replace(b'<span class="field_size">2\xe9\xa0\xad</span>', b"")
+        .replace(b'<div id="odds_area"><p>\xe3\x82\xaa\xe3\x83\x83\xe3\x82\xba\xe6\xa1\x88\xe5\x86\x85</p></div>', b""))
+    app = create_app(tmp_path / "incomplete-current.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+        status=200, final_url=URL,
+        headers={"content-type": "text/html; charset=utf-8"}, body=incomplete_page,
+    )))
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+        cards = client.get("/api/acquisition/jra/race-cards")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "race_card_validation_failed"
+    assert cards.json() == []
+
+
+def test_current_card_rejects_terminal_marker_before_entry_table(tmp_path: Path) -> None:
+    marker = b'<div id="odds_area"><p>\xe3\x82\xaa\xe3\x83\x83\xe3\x82\xba\xe6\xa1\x88\xe5\x86\x85</p></div>'
+    misplaced_marker_page = (FIXTURE
+        .replace(marker, b"")
+        .replace(b'<div id="syutsuba">', marker + b'<div id="syutsuba">'))
+    app = create_app(tmp_path / "misplaced-marker.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+        status=200, final_url=URL,
+        headers={"content-type": "text/html; charset=utf-8"}, body=misplaced_marker_page,
+    )))
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "race_card_validation_failed"
+
+
+def test_current_card_rejects_terminal_marker_nested_before_inner_table(tmp_path: Path) -> None:
+    marker = b'<div id="odds_area"><p>\xe3\x82\xaa\xe3\x83\x83\xe3\x82\xba\xe6\xa1\x88\xe5\x86\x85</p></div>'
+    nested_marker_page = (FIXTURE
+        .replace(marker, b"")
+        .replace(b'<div id="syutsuba">', b'<div id="syutsuba">' + marker))
+    app = create_app(tmp_path / "nested-marker.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+        status=200, final_url=URL,
+        headers={"content-type": "text/html; charset=utf-8"}, body=nested_marker_page,
+    )))
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "race_card_validation_failed"
 
 
 def test_user_acquires_cp932_page_declared_as_shift_jis(tmp_path: Path) -> None:
