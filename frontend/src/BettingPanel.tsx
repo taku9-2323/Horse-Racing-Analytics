@@ -3,6 +3,11 @@ import { useState } from "react";
 type Bet = {
   id: number; horse_number: number; bet_type: "win" | "place";
   decision_type: "candidate" | "discretionary"; amount_yen: number;
+  prediction_run_id: number | null;
+};
+type Prediction = {
+  id: number; model_identifier: string; model_version: string; frozen_at: string;
+  status: string; official_evaluation_eligible: boolean;
 };
 type Totals = { stake_yen: number; payout_yen: number; refund_yen: number; profit_yen: number | null; return_rate: number | null };
 type Ledger = {
@@ -23,6 +28,8 @@ export default function BettingPanel({ raceId, runners }: Props) {
   const [horseNumber, setHorseNumber] = useState(runners[0]?.horse_number ?? 1);
   const [betType, setBetType] = useState<"win" | "place">("win");
   const [amountYen, setAmountYen] = useState(100);
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [predictionRunId, setPredictionRunId] = useState("");
   const [resultFile, setResultFile] = useState<File | null>(null);
   const [jraResultUrl, setJraResultUrl] = useState("");
   const [jraResultLoading, setJraResultLoading] = useState(false);
@@ -37,7 +44,16 @@ export default function BettingPanel({ raceId, runners }: Props) {
 
   const showLedger = async () => {
     try {
-      await loadLedger();
+      const [ledgerResponse, predictionResponse] = await Promise.all([
+        fetch(`/api/races/${raceId}/ledger`),
+        fetch(`/api/races/${raceId}/predictions`),
+      ]);
+      if (!ledgerResponse.ok) throw new Error(await responseError(ledgerResponse));
+      if (!predictionResponse.ok) throw new Error(await responseError(predictionResponse));
+      setLedger((await ledgerResponse.json()) as Ledger);
+      setPredictions((await predictionResponse.json() as Prediction[]).filter(
+        (prediction) => prediction.status === "active" && prediction.official_evaluation_eligible,
+      ));
       setMessage("購入台帳を読み込みました。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "購入台帳を読み込めませんでした。");
@@ -48,7 +64,11 @@ export default function BettingPanel({ raceId, runners }: Props) {
     try {
       const response = await fetch(`/api/races/${raceId}/bets`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ horse_number: horseNumber, bet_type: betType, decision_type: "discretionary", amount_yen: amountYen }),
+        body: JSON.stringify({
+          horse_number: horseNumber, bet_type: betType,
+          decision_type: "discretionary", amount_yen: amountYen,
+          prediction_run_id: predictionRunId ? Number(predictionRunId) : null,
+        }),
       });
       if (!response.ok) throw new Error(await responseError(response));
       await loadLedger();
@@ -122,6 +142,14 @@ export default function BettingPanel({ raceId, runners }: Props) {
               <option value="win">単勝</option><option value="place">複勝</option>
             </select></label>
             <p className="fixed-decision-type">購入区分: 候補外裁量</p>
+            <label>購入判断に使った固定予測<select value={predictionRunId} onChange={(event) => setPredictionRunId(event.target.value)}>
+              <option value="">関連付けなし</option>
+              {predictions.map((prediction) => (
+                <option key={prediction.id} value={prediction.id}>
+                  #{prediction.id} {prediction.model_identifier} {prediction.model_version} / {prediction.frozen_at}
+                </option>
+              ))}
+            </select></label>
             <label>購入額（円）<input type="number" min="100" step="100" value={amountYen} onChange={(event) => setAmountYen(Number(event.target.value))} /></label>
             <button type="button" onClick={() => void createBet()}>実購入を登録</button>
           </div>
@@ -144,7 +172,7 @@ export default function BettingPanel({ raceId, runners }: Props) {
           </div>
           <div className="bet-list">
             {ledger.bets.length === 0 ? <p className="empty-note">実購入はまだありません。</p> : ledger.bets.map((bet) => (
-              <span key={bet.id}>{bet.horse_number}番 / {bet.bet_type === "win" ? "単勝" : "複勝"} / {bet.decision_type === "candidate" ? "候補内" : "候補外裁量"} / {yen(bet.amount_yen)}</span>
+              <span key={bet.id}>{bet.horse_number}番 / {bet.bet_type === "win" ? "単勝" : "複勝"} / {bet.decision_type === "candidate" ? "候補内" : "候補外裁量"} / {yen(bet.amount_yen)}{bet.prediction_run_id ? ` / 固定予測 #${bet.prediction_run_id}` : " / 予測関連付けなし"}</span>
             ))}
           </div>
           <section className="settlement-summary" aria-label="収支集計">

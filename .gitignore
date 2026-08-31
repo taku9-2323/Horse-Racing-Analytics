@@ -5,6 +5,7 @@ backend/.mypy_cache/
 backend/**/__pycache__/
 backend/**/*.py[cod]
 backend/*.egg-info/
+.tmp-mypy-pure/
 
 # Node
 frontend/node_modules/

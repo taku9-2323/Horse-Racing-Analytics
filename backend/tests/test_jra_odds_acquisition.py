@@ -114,7 +114,10 @@ def test_registers_shift_jis_odds_when_http_header_omits_charset(tmp_path: Path)
         odds_html=current_odds_html.encode("shift_jis"),
         odds_content_type="text/html",
     )
-    app = create_app(tmp_path / "shift-jis.sqlite3", jra_fetcher=fetcher)
+    app = create_app(
+        tmp_path / "shift-jis.sqlite3", jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
 
     with TestClient(app) as client:
         card = client.post("/api/acquisition/jra/race-card", json={"url": CARD_URL}).json()

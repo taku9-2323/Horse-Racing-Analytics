@@ -16,6 +16,7 @@ class BetCreate(BaseModel):
     bet_type: BetType
     decision_type: DecisionType
     amount_yen: int = Field(gt=0, multiple_of=100)
+    prediction_run_id: int | None = Field(default=None, gt=0)
 
 
 class Bet(BaseModel):
@@ -27,6 +28,7 @@ class Bet(BaseModel):
     amount_yen: int
     placed_at: str
     status: str
+    prediction_run_id: int | None
 
 
 class RunnerResult(BaseModel):
@@ -177,6 +179,9 @@ def bet_response(row: Any) -> Bet:
         id=int(row["id"]), race_id=int(row["race_id"]), horse_number=int(row["horse_number"]),
         bet_type=row["bet_type"], decision_type=row["decision_type"],
         amount_yen=int(row["amount_yen"]), placed_at=str(row["placed_at"]), status=str(row["status"]),
+        prediction_run_id=(
+            None if row["prediction_run_id"] is None else int(row["prediction_run_id"])
+        ),
     )
 
 

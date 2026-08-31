@@ -2,9 +2,10 @@ from pathlib import Path
 import sqlite3
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal, cast
 
 from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
+from app.evaluation import PredictionEvaluationRow, SettlementEvaluationRow
 from app.race_analysis import win_market_baseline
 
 
@@ -372,6 +373,21 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '10' WHERE key = 'schema_version'"
             )
+            bet_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(bets)").fetchall()
+            }
+            for definition in (
+                "prediction_run_id INTEGER REFERENCES prediction_runs(id)",
+                "odds_snapshot_id INTEGER REFERENCES odds_snapshots(id)",
+                "win_odds REAL", "place_odds_min REAL", "place_odds_max REAL",
+                "popularity INTEGER",
+            ):
+                column_name = definition.split()[0]
+                if column_name not in bet_columns:
+                    connection.execute(f"ALTER TABLE bets ADD COLUMN {definition}")
+            connection.execute(
+                "UPDATE application_metadata SET value = '11' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -379,7 +395,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("10",):
+        if row != ("11",):
             raise RuntimeError("SQLite schema is not ready")
 
     def register_jra_race_with_odds(
@@ -1056,6 +1072,7 @@ class SqliteDatabase:
     def create_bet(
         self, race_id: int, horse_number: int, bet_type: str,
         decision_type: str, amount_yen: int, placed_at: str,
+        prediction_run_id: int | None = None,
     ) -> int:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
@@ -1081,14 +1098,55 @@ class SqliteDatabase:
                 ).fetchone()
                 if field_size is None or int(field_size[0]) < 5:
                     raise ValueError("place_not_offered")
+            odds_snapshot_id = None
+            win_odds = None
+            place_odds_min = None
+            place_odds_max = None
+            popularity = None
+            if prediction_run_id is not None:
+                prediction = connection.execute(
+                    "SELECT * FROM prediction_runs WHERE id = ?", (prediction_run_id,),
+                ).fetchone()
+                if prediction is None:
+                    raise LookupError("prediction_not_found")
+                if int(prediction["race_id"]) != race_id:
+                    raise ValueError("prediction_race_mismatch")
+                if (
+                    str(prediction["status"]) != "active"
+                    or not bool(prediction["official_evaluation_eligible"])
+                    or str(prediction["frozen_at"]) > placed_at
+                ):
+                    raise ValueError("prediction_not_eligible_for_bet")
+                odds_snapshot_id = int(prediction["input_snapshot_id"])
+                odds = connection.execute(
+                    """SELECT * FROM odds_snapshot_runners
+                       WHERE snapshot_id = ? AND horse_number = ?""",
+                    (odds_snapshot_id, horse_number),
+                ).fetchone()
+                if odds is None:
+                    raise ValueError("prediction_runner_mismatch")
+                win_odds = float(odds["win_odds"])
+                place_odds_min = float(odds["place_odds_min"])
+                place_odds_max = float(odds["place_odds_max"])
+                rank = connection.execute(
+                    """SELECT 1 + COUNT(*) FROM odds_snapshot_runners
+                       WHERE snapshot_id = ? AND win_odds < ?""",
+                    (odds_snapshot_id, win_odds),
+                ).fetchone()
+                popularity = int(rank[0]) if rank is not None else None
             cursor = connection.execute(
                 """
                 INSERT INTO bets (
                     race_id, horse_number, bet_type, decision_type,
-                    amount_yen, placed_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+                    amount_yen, placed_at, status, prediction_run_id,
+                    odds_snapshot_id, win_odds, place_odds_min, place_odds_max, popularity
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                 """,
-                (race_id, horse_number, bet_type, decision_type, amount_yen, placed_at),
+                (
+                    race_id, horse_number, bet_type, decision_type, amount_yen, placed_at,
+                    prediction_run_id, odds_snapshot_id, win_odds,
+                    place_odds_min, place_odds_max, popularity,
+                ),
             )
             bet_id = cursor.lastrowid
             if bet_id is None:
@@ -1352,3 +1410,147 @@ class SqliteDatabase:
                 (race_id,),
             ).fetchall()
         return bets, result, settlements
+
+    def get_evaluation_dataset(
+        self,
+    ) -> tuple[list[PredictionEvaluationRow], list[SettlementEvaluationRow]]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            prediction_rows = connection.execute(
+                """
+                WITH ranked_snapshot_runners AS (
+                    SELECT snapshot_runner.*,
+                           RANK() OVER (
+                               PARTITION BY snapshot_runner.snapshot_id
+                               ORDER BY snapshot_runner.win_odds
+                           ) AS popularity
+                    FROM odds_snapshot_runners AS snapshot_runner
+                )
+                SELECT prediction.id AS prediction_run_id,
+                       prediction.model_identifier, prediction.model_version,
+                       prediction.status, prediction.official_evaluation_eligible,
+                       prediction.frozen_at, 'win' AS bet_type,
+                       race.racecourse, runner_prediction.horse_number,
+                       runner_prediction.win_market_share AS predicted_probability,
+                       snapshot_runner.win_odds,
+                       snapshot_runner.win_odds AS odds_value,
+                       snapshot_runner.popularity,
+                       CASE WHEN runner_result.finish_position = 1 THEN 1 ELSE 0 END AS outcome
+                FROM prediction_runs AS prediction
+                JOIN races AS race ON race.id = prediction.race_id
+                JOIN runner_predictions AS runner_prediction
+                  ON runner_prediction.prediction_run_id = prediction.id
+                JOIN ranked_snapshot_runners AS snapshot_runner
+                  ON snapshot_runner.snapshot_id = prediction.input_snapshot_id
+                 AND snapshot_runner.horse_number = runner_prediction.horse_number
+                JOIN result_versions AS result_version
+                  ON result_version.race_id = prediction.race_id
+                 AND result_version.status = 'active'
+                JOIN runner_results AS runner_result
+                  ON runner_result.result_version_id = result_version.id
+                 AND runner_result.horse_number = runner_prediction.horse_number
+                 AND runner_result.status = '確定'
+                ORDER BY prediction.id, runner_prediction.horse_number
+                """
+            ).fetchall()
+            tag_rows = connection.execute(
+                """
+                SELECT match.prediction_run_id, tag.rule_key, tag.version, match.context_json
+                FROM prediction_analysis_tags AS match
+                JOIN analysis_tag_versions AS tag ON tag.id = match.rule_version_id
+                ORDER BY match.prediction_run_id, tag.rule_key, tag.version
+                """
+            ).fetchall()
+            settlement_rows = connection.execute(
+                """
+                SELECT settlement.*, bet.decision_type, bet.bet_type,
+                       bet.horse_number, race.racecourse,
+                       prediction.id AS prediction_run_id,
+                       prediction.model_identifier, prediction.model_version,
+                       prediction.frozen_at,
+                       bet.win_odds, bet.place_odds_min, bet.place_odds_max,
+                       CASE WHEN bet.bet_type = 'win' THEN bet.win_odds
+                            ELSE bet.place_odds_min END AS odds_value,
+                       bet.popularity
+                FROM settlements AS settlement
+                JOIN bets AS bet ON bet.id = settlement.bet_id
+                JOIN races AS race ON race.id = bet.race_id
+                LEFT JOIN prediction_runs AS prediction ON prediction.id = bet.prediction_run_id
+                WHERE settlement.status = 'active' AND bet.status = 'active'
+                ORDER BY settlement.id
+                """
+            ).fetchall()
+        tags_by_prediction: dict[int, list[tuple[str, int, set[int] | None]]] = {}
+        for row in tag_rows:
+            context = json.loads(str(row["context_json"]))
+            context_runners = context.get("runners")
+            runner_numbers = None
+            if isinstance(context_runners, list):
+                runner_numbers = {
+                    int(value["horse_number"] if isinstance(value, dict) else value)
+                    for value in context_runners
+                }
+            tags_by_prediction.setdefault(int(row["prediction_run_id"]), []).append(
+                (
+                    str(row["rule_key"]), int(row["version"]),
+                    runner_numbers,
+                )
+            )
+        def tags_for(prediction_id: int, horse_number: int) -> list[tuple[str, int]]:
+            return [
+                (rule_key, version)
+                for rule_key, version, runners in tags_by_prediction.get(prediction_id, [])
+                if runners is None or horse_number in runners
+            ]
+        predictions: list[PredictionEvaluationRow] = []
+        for row in prediction_rows:
+            prediction_id = int(row["prediction_run_id"])
+            predictions.append(PredictionEvaluationRow(
+                prediction_run_id=prediction_id,
+                model_identifier=str(row["model_identifier"]),
+                model_version=str(row["model_version"]),
+                frozen_at=str(row["frozen_at"]),
+                bet_type="win",
+                racecourse=str(row["racecourse"]),
+                odds_value=float(row["odds_value"]),
+                popularity=int(row["popularity"]),
+                tags=tags_for(prediction_id, int(row["horse_number"])),
+                predicted_probability=float(row["predicted_probability"]),
+                outcome=int(row["outcome"]),
+                eligible=(
+                    str(row["status"]) == "active"
+                    and bool(row["official_evaluation_eligible"])
+                ),
+            ))
+        settlements: list[SettlementEvaluationRow] = []
+        for row in settlement_rows:
+            prediction_id = row["prediction_run_id"]
+            bet_type = str(row["bet_type"])
+            decision_type = str(row["decision_type"])
+            if bet_type not in ("win", "place"):
+                raise ValueError(f"Unsupported bet type in evaluation data: {bet_type}")
+            if decision_type not in ("candidate", "discretionary"):
+                raise ValueError(f"Unsupported decision type in evaluation data: {decision_type}")
+            settlements.append(SettlementEvaluationRow(
+                model_identifier=(
+                    None if row["model_identifier"] is None else str(row["model_identifier"])
+                ),
+                model_version=(
+                    None if row["model_version"] is None else str(row["model_version"])
+                ),
+                frozen_at=None if row["frozen_at"] is None else str(row["frozen_at"]),
+                bet_type=cast(Literal["win", "place"], bet_type),
+                racecourse=str(row["racecourse"]),
+                odds_value=None if row["odds_value"] is None else float(row["odds_value"]),
+                popularity=None if row["popularity"] is None else int(row["popularity"]),
+                tags=(
+                    [] if prediction_id is None else tags_for(
+                        int(prediction_id), int(row["horse_number"]),
+                    )
+                ),
+                decision_type=cast(Literal["candidate", "discretionary"], decision_type),
+                stake_yen=int(row["stake_yen"]),
+                payout_yen=int(row["payout_yen"]),
+                refund_yen=int(row["refund_yen"]),
+            ))
+        return predictions, settlements

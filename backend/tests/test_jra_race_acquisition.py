@@ -89,7 +89,7 @@ def test_user_acquires_current_jra_card_without_declared_headcount(tmp_path: Pat
              '<div class="cell weight">466kg<span>(-6)</span></div></td>').encode(),
         )
         .replace('<p class="age">\u725d4/\u9ed2\u9e7f</p>'.encode(), '<p class="age">\u305b\u30934/\u9ed2\u9e7f</p>'.encode()))
-    app = create_app(tmp_path / "current.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+    app = create_app(tmp_path / "current.sqlite3", now_provider=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc), jra_fetcher=FakeFetcher(FetchResponse(
         status=200, final_url=URL,
         headers={"content-type": "text/html; charset=utf-8"}, body=current_page,
     )))
@@ -159,7 +159,7 @@ def test_user_acquires_cp932_page_declared_as_shift_jis(tmp_path: Path) -> None:
         .replace('charset="utf-8"', 'charset="Shift_JIS"')
         .replace("</body>", "<p>\u9ad9</p></body>")
         .encode("cp932"))
-    app = create_app(tmp_path / "cp932.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+    app = create_app(tmp_path / "cp932.sqlite3", now_provider=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc), jra_fetcher=FakeFetcher(FetchResponse(
         status=200, final_url=URL, headers={"content-type": "text/html"}, body=cp932_page,
     )))
 
@@ -259,7 +259,7 @@ def test_page_update_time_is_recorded_only_when_declared(tmp_path: Path) -> None
         b'<div class="race_header">',
         b'<div class="race_header"><time class="update_time" datetime="2026-08-29T03:55:00Z"></time>',
     )
-    app = create_app(tmp_path / "updated.sqlite3", jra_fetcher=FakeFetcher(FetchResponse(
+    app = create_app(tmp_path / "updated.sqlite3", now_provider=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc), jra_fetcher=FakeFetcher(FetchResponse(
         status=200, final_url=URL, headers={"content-type": "text/html; charset=utf-8"}, body=updated,
     )))
 

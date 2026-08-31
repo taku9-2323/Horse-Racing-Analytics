@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 from threading import Lock
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -37,6 +37,7 @@ from app.jra_acquisition import (
     AcquisitionObservation, FetchResponse, JraOddsAcquirer, JraRaceCardAcquirer, JraResultAcquirer,
     OddsPageRequest, RaceCardRequest, ResultPageRequest, SourceObservation, default_fetcher,
 )
+from app.evaluation import EvaluationFilters, EvaluationReport, build_evaluation_report
 
 
 class ComponentHealth(BaseModel):
@@ -359,6 +360,7 @@ def create_app(
             bet_id = database.create_bet(
                 race_id, request.horse_number, request.bet_type,
                 request.decision_type, request.amount_yen, utc_iso(current_time()),
+                request.prediction_run_id,
             )
         except LookupError as error:
             raise HTTPException(status_code=404, detail={"code": str(error), "message": "購入対象の出走馬が見つかりません。"}) from error
@@ -367,6 +369,9 @@ def create_app(
                 "race_already_settled": "結果取込後に購入は追加できません。",
                 "place_not_offered": "4頭以下のレースでは複勝を登録できません。",
                 "candidate_not_available": "現在は適格な期待値候補がないため、候補内購入を登録できません。",
+                "prediction_race_mismatch": "選択した固定予測は別のレースです。",
+                "prediction_not_eligible_for_bet": "公式評価対象の有効な固定予測を選択してください。",
+                "prediction_runner_mismatch": "固定予測に購入対象の出走馬がありません。",
             }
             raise HTTPException(status_code=409, detail={"code": str(error), "message": messages.get(str(error), "購入を登録できません。")}) from error
         stored = database.get_bet(bet_id)
@@ -493,6 +498,10 @@ def create_app(
             settlements=[settlement_response(settlement) for settlement in settlements],
             totals=totals, by_decision_type=by_decision_type,
         )
+
+    @app.get("/api/evaluation", response_model=EvaluationReport)
+    def get_evaluation(filters: Annotated[EvaluationFilters, Query()]) -> EvaluationReport:
+        return build_evaluation_report(*database.get_evaluation_dataset(), filters)
 
     @app.post("/api/data/backups", response_model=BackupSummary, status_code=201)
     def create_backup() -> BackupSummary:

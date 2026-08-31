@@ -23,7 +23,9 @@ const jsonResponse = (value: object, status = 200) => new Response(JSON.stringif
 
 describe("bet and result workflow", () => {
   it("registers a classified bet, imports official payouts, and shows the settlement", async () => {
-    const bet = { id: 1, horse_number: 1, bet_type: "win", decision_type: "discretionary", amount_yen: 200 };
+    const prediction = { id: 8, model_identifier: "market-baseline", model_version: "1.0",
+      frozen_at: "2026-08-30T05:00:00Z", status: "active", official_evaluation_eligible: true };
+    const bet = { id: 1, horse_number: 1, bet_type: "win", decision_type: "discretionary", amount_yen: 200, prediction_run_id: 8 };
     const emptyLedger = {
       bets: [], result_version: null, settlements: [], totals: totals(),
       by_decision_type: { candidate: totals(), discretionary: totals() },
@@ -39,6 +41,7 @@ describe("bet and result workflow", () => {
     };
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse(emptyLedger))
+      .mockResolvedValueOnce(jsonResponse([prediction]))
       .mockResolvedValueOnce(jsonResponse(bet, 201))
       .mockResolvedValueOnce(jsonResponse(betLedger))
       .mockResolvedValueOnce(jsonResponse({ id: 1, version: 1 }, 201))
@@ -48,9 +51,10 @@ describe("bet and result workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "購入・収支を表示" }));
     expect(await screen.findByText("実購入はまだありません。")).toBeTruthy();
 
+    fireEvent.change(screen.getByLabelText("購入判断に使った固定予測"), { target: { value: "8" } });
     fireEvent.change(screen.getByLabelText("購入額（円）"), { target: { value: "200" } });
     fireEvent.click(screen.getByRole("button", { name: "実購入を登録" }));
-    expect(await screen.findByText("1番 / 単勝 / 候補外裁量 / ¥200")).toBeTruthy();
+    expect(await screen.findByText("1番 / 単勝 / 候補外裁量 / ¥200 / 固定予測 #8")).toBeTruthy();
     expect(screen.getByText("損益 未確定")).toBeTruthy();
 
     const resultCsv = new File(["horse_number,finish_position,status,win_payout_per_100,place_payout_per_100\n1,1,確定,420,150"], "results.csv", { type: "text/csv" });
@@ -77,6 +81,7 @@ describe("bet and result workflow", () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(emptyLedger))
+      .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse({
         result: { id: 3, version: 1 }, changes: [],
         source: { parser_version: "jra-result/1" },
@@ -94,7 +99,7 @@ describe("bet and result workflow", () => {
 
     expect(await screen.findByText("JRA結果を取得し、結果 v1 で精算しました（jra-result/1）。")).toBeTruthy();
     expect(screen.getByText("結果 v1 精算済み")).toBeTruthy();
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/races/7/results/acquire", expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/races/7/results/acquire", expect.objectContaining({
       method: "POST", body: JSON.stringify({ url: "https://www.jra.go.jp/JRADB/accessS.html?CNAME=result" }),
     }));
   });
@@ -106,6 +111,7 @@ describe("bet and result workflow", () => {
     };
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse(emptyLedger))
+      .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse({
         detail: { code: "acquisition_stopped", message: "JRAからの取得を停止しました。CSV取込を使用してください。" },
       }, 503)));

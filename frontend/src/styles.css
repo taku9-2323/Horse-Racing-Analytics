@@ -180,7 +180,7 @@ th { color: #8f9b94; font-weight: 500; }
 .betting-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
 .betting-heading h4 { margin: 0 0 8px; }
 .betting-heading p { margin: 0; color: #8f9b94; font-size: 0.82rem; }
-.bet-form { display: grid; grid-template-columns: 1.5fr repeat(3, 1fr) auto; align-items: end; gap: 10px; margin-top: 18px; }
+.bet-form { display: grid; grid-template-columns: 1.5fr repeat(4, 1fr) auto; align-items: end; gap: 10px; margin-top: 18px; }
 .bet-form label { display: grid; gap: 5px; color: #aeb8b2; font-size: 0.74rem; }
 .bet-form select, .bet-form input { min-width: 0; padding: 8px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
 .result-import { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; margin-top: 18px; }
@@ -191,6 +191,25 @@ th { color: #8f9b94; font-weight: 500; }
 .settlement-summary { display: grid; grid-template-columns: repeat(6, auto); gap: 14px; margin-top: 18px; padding: 14px; border: 1px solid rgba(220, 204, 170, 0.14); font-size: 0.8rem; }
 .settlement-summary strong { color: #c6a766; }
 .decision-totals { display: flex; gap: 20px; margin-top: 10px; color: #8f9b94; font-size: 0.76rem; }
+
+.evaluation-panel { margin-top: 24px; }
+.evaluation-empty { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 28px; }
+.evaluation-empty p, .evaluation-note { margin: 0; color: #8f9b94; font-size: 0.84rem; }
+.evaluation-content { padding-bottom: 28px; }
+.evaluation-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 24px 28px; }
+.evaluation-filters label { display: grid; gap: 5px; color: #aeb8b2; font-size: 0.72rem; }
+.evaluation-filters select, .evaluation-filters input { min-width: 0; padding: 8px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
+.evaluation-filters button { align-self: end; }
+.evaluation-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid rgba(220, 204, 170, 0.14); border-bottom: 1px solid rgba(220, 204, 170, 0.14); }
+.evaluation-summary article { display: grid; gap: 8px; padding: 22px 28px; }
+.evaluation-summary article + article { border-left: 1px solid rgba(220, 204, 170, 0.14); }
+.evaluation-summary span { color: #8f9b94; font-size: 0.74rem; }
+.evaluation-summary strong { color: #dcccaa; font-size: 1rem; }
+.evaluation-note { padding: 18px 28px; }
+.evaluation-returns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 22px 28px 0; }
+.evaluation-returns article { display: grid; grid-template-columns: repeat(5, auto); gap: 10px; padding: 16px; border: 1px solid rgba(220, 204, 170, 0.14); font-size: 0.76rem; }
+.evaluation-returns strong { grid-column: 1 / -1; color: #c6a766; }
+.evaluation-returns span { color: #aeb8b2; }
 
 .maintenance-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 24px 28px; }
 .maintenance-actions a {
@@ -350,6 +369,10 @@ footer {
   .tags-heading, .tag-card summary { flex-direction: column; }
   .betting-heading, .decision-totals { flex-direction: column; }
   .bet-form, .result-import, .settlement-summary { grid-template-columns: 1fr; }
+  .evaluation-empty { align-items: stretch; flex-direction: column; }
+  .evaluation-filters, .evaluation-summary, .evaluation-returns { grid-template-columns: 1fr; }
+  .evaluation-summary article + article { border-top: 1px solid rgba(220, 204, 170, 0.14); border-left: 0; }
+  .evaluation-returns article { grid-template-columns: 1fr; }
   .maintenance-actions, .backup-list { padding-right: 20px; padding-left: 20px; }
   .backup-list li { align-items: stretch; flex-direction: column; }
 

@@ -4,6 +4,7 @@ import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
 import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
+import EvaluationPanel from "./EvaluationPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -346,11 +347,13 @@ function App() {
         <AnalysisTagsPanel />
       </section>
 
+      <EvaluationPanel />
+
       <DataMaintenancePanel />
 
       <footer>
-        <span>チケット14</span>
-        <span>登録済みレース選択・市場分析</span>
+        <span>チケット07</span>
+        <span>条件別の予測精度・購入収支</span>
       </footer>
     </main>
   );
