@@ -5,6 +5,7 @@ import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
 import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
 import EvaluationPanel from "./EvaluationPanel";
+import MarketAttentionPanel from "./MarketAttentionPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -323,6 +324,7 @@ function App() {
               <strong>{analysis.candidate_status}</strong>
               <span>{analysis.candidate_reason}</span>
             </aside>
+            <MarketAttentionPanel raceId={analysis.race_id} />
             <PredictionPanel
               key={analysis.race_id}
               raceId={analysis.race_id}
@@ -352,8 +354,8 @@ function App() {
       <DataMaintenancePanel />
 
       <footer>
-        <span>個人運用MVP / チケット10</span>
-        <span>市場基準と独立予測を分離したモデル追加境界を検証済み</span>
+        <span>個人運用MVP / チケット15</span>
+        <span>選択したオッズ時点の市場評価順位を、予測・購入推奨と分離して表示</span>
       </footer>
     </main>
   );

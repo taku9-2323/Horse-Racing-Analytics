@@ -39,6 +39,7 @@ from app.jra_acquisition import (
     OddsPageRequest, RaceCardRequest, ResultPageRequest, SourceObservation, default_fetcher,
 )
 from app.evaluation import EvaluationFilters, EvaluationReport, build_evaluation_report
+from app.market_attention import MarketAttentionRanking, build_market_attention_ranking
 
 
 class ComponentHealth(BaseModel):
@@ -264,6 +265,21 @@ def create_app(
     @app.get("/api/races/{race_id}/odds-snapshots", response_model=list[OddsSnapshot])
     def list_snapshots(race_id: int) -> list[OddsSnapshot]:
         return [snapshot_response(*stored) for stored in database.list_odds_snapshots(race_id)]
+
+    @app.get("/api/races/{race_id}/market-attention", response_model=MarketAttentionRanking)
+    def get_market_attention(race_id: int, snapshot_id: int | None = None) -> MarketAttentionRanking:
+        race = database.get_race(race_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail={"code": "race_not_found", "message": "レースが見つかりません。"})
+        snapshots = database.list_odds_snapshots(race_id)
+        if not snapshots:
+            raise HTTPException(status_code=409, detail={"code": "odds_snapshot_not_found", "message": "保存済みのオッズ時点がありません。"})
+        selected = snapshots[-1] if snapshot_id is None else next(
+            (stored for stored in snapshots if int(stored[0]["id"]) == snapshot_id), None,
+        )
+        if selected is None:
+            raise HTTPException(status_code=404, detail={"code": "snapshot_not_found", "message": "選択したオッズ時点が見つかりません。"})
+        return build_market_attention_ranking(race_id, *selected, race[1])
 
     @app.post("/api/odds-snapshots/{snapshot_id}/freeze", response_model=PredictionRun, status_code=201)
     def freeze_prediction(snapshot_id: int, request: FreezeRequest) -> PredictionRun:
