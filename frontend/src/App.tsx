@@ -7,6 +7,7 @@ import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
 import EvaluationPanel from "./EvaluationPanel";
 import MarketAttentionPanel from "./MarketAttentionPanel";
 import RuleJudgementPanel from "./RuleJudgementPanel";
+import MarketRuleComparisonPanel from "./MarketRuleComparisonPanel";
 
 type HealthStatus = "ok" | "error";
 
@@ -327,6 +328,7 @@ function App() {
             </aside>
             <MarketAttentionPanel raceId={analysis.race_id} />
             <RuleJudgementPanel raceId={analysis.race_id} />
+            <MarketRuleComparisonPanel raceId={analysis.race_id} />
             <PredictionPanel
               key={analysis.race_id}
               raceId={analysis.race_id}
@@ -356,8 +358,8 @@ function App() {
       <DataMaintenancePanel />
 
       <footer>
-        <span>個人運用MVP / チケット16</span>
-        <span>説明可能なルール判定を事前情報だけで生成・固定</span>
+        <span>個人運用MVP / チケット17</span>
+        <span>同じ時点の市場順位と固定ルール判定を一画面で比較</span>
       </footer>
     </main>
   );
