@@ -185,7 +185,7 @@ class DataMaintenance:
                 foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchone()
         except (OSError, sqlite3.Error) as error:
             raise InvalidBackupError("backup_invalid") from error
-        if integrity != ("ok",) or schema != ("12",) or foreign_key_errors is not None:
+        if integrity != ("ok",) or schema != ("13",) or foreign_key_errors is not None:
             raise InvalidBackupError("backup_invalid")
 
     def _existing_path(self, backup_id: str) -> Path:

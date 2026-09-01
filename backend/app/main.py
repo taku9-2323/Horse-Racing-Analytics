@@ -40,6 +40,10 @@ from app.jra_acquisition import (
 )
 from app.evaluation import EvaluationFilters, EvaluationReport, build_evaluation_report
 from app.market_attention import MarketAttentionRanking, build_market_attention_ranking
+from app.rule_judgements import (
+    CorrectRuleJudgementRequest, FreezeRuleJudgementRequest, RuleJudgementRun, RuleVersion,
+    judgement_response, rule_version_response,
+)
 
 
 class ComponentHealth(BaseModel):
@@ -280,6 +284,47 @@ def create_app(
         if selected is None:
             raise HTTPException(status_code=404, detail={"code": "snapshot_not_found", "message": "選択したオッズ時点が見つかりません。"})
         return build_market_attention_ranking(race_id, *selected, race[1])
+
+    @app.get("/api/rule-versions", response_model=list[RuleVersion])
+    def list_rule_versions() -> list[RuleVersion]:
+        return [rule_version_response(row) for row in database.list_rule_versions()]
+
+    def freeze_rule_judgement(race_id: int, request: FreezeRuleJudgementRequest,
+                              replaces_id: int | None = None, reason: str | None = None) -> RuleJudgementRun:
+        try:
+            run_id = database.create_rule_judgement(
+                race_id, request.snapshot_id, request.rule_version_id, request.judgement_as_of,
+                utc_iso(current_time()), replaces_id, reason,
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": str(error), "message": "判定対象が見つかりません。"}) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail={"code": str(error), "message": "判定時点より後の情報は使用できません。"}) from error
+        stored = database.get_rule_judgement(run_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="固定したルール判定を読み込めません。")
+        return judgement_response(*stored)
+
+    @app.post("/api/races/{race_id}/rule-judgements/freeze", response_model=RuleJudgementRun, status_code=201)
+    def create_rule_judgement(race_id: int, request: FreezeRuleJudgementRequest) -> RuleJudgementRun:
+        return freeze_rule_judgement(race_id, request)
+
+    @app.get("/api/races/{race_id}/rule-judgements", response_model=list[RuleJudgementRun])
+    def list_rule_judgements(race_id: int) -> list[RuleJudgementRun]:
+        return [judgement_response(*stored) for stored in database.list_rule_judgements(race_id)]
+
+    @app.post("/api/rule-judgements/{judgement_id}/correct", response_model=RuleJudgementRun, status_code=201)
+    def correct_rule_judgement(judgement_id: int, request: CorrectRuleJudgementRequest) -> RuleJudgementRun:
+        original = database.get_rule_judgement(judgement_id)
+        if original is None:
+            raise HTTPException(status_code=404, detail={"code": "judgement_not_found", "message": "固定判定が見つかりません。"})
+        return freeze_rule_judgement(int(original[0]["race_id"]), request, judgement_id, request.reason)
+
+    @app.put("/api/rule-judgements/{judgement_id}")
+    def reject_rule_judgement_edit(judgement_id: int) -> None:
+        if database.get_rule_judgement(judgement_id) is None:
+            raise HTTPException(status_code=404, detail={"code": "judgement_not_found", "message": "固定判定が見つかりません。"})
+        raise HTTPException(status_code=409, detail={"code": "frozen_judgement_immutable", "message": "固定済み判定は直接編集できません。"})
 
     @app.post("/api/odds-snapshots/{snapshot_id}/freeze", response_model=PredictionRun, status_code=201)
     def freeze_prediction(snapshot_id: int, request: FreezeRequest) -> PredictionRun:

@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
 from app.evaluation import PredictionEvaluationRow, SettlementEvaluationRow
 from app.race_analysis import win_market_baseline
+from app.rule_judgements import INITIAL_RULE, build_runner_judgements
 
 
 class RaceImportConflictError(Exception):
@@ -443,6 +444,31 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '12' WHERE key = 'schema_version'"
             )
+            connection.execute("""CREATE TABLE IF NOT EXISTS rule_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, rule_key TEXT NOT NULL, version INTEGER NOT NULL,
+                title TEXT NOT NULL, conditions_json TEXT NOT NULL, priority_json TEXT NOT NULL,
+                missing_policy TEXT NOT NULL, vocabulary_json TEXT NOT NULL, allowed_fields_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, UNIQUE(rule_key, version))""")
+            connection.execute("""INSERT OR IGNORE INTO rule_versions (
+                rule_key,version,title,conditions_json,priority_json,missing_policy,vocabulary_json,allowed_fields_json,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)""", (
+                INITIAL_RULE["rule_key"], INITIAL_RULE["version"], INITIAL_RULE["title"],
+                json.dumps(INITIAL_RULE["conditions"], ensure_ascii=False), json.dumps(INITIAL_RULE["priority"], ensure_ascii=False),
+                INITIAL_RULE["missing_policy"], json.dumps(INITIAL_RULE["vocabulary"], ensure_ascii=False),
+                json.dumps(INITIAL_RULE["allowed_fields"], ensure_ascii=False), "2026-09-01T00:00:00Z",
+            ))
+            connection.execute("""CREATE TABLE IF NOT EXISTS rule_judgement_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, race_id INTEGER NOT NULL REFERENCES races(id),
+                input_snapshot_id INTEGER NOT NULL REFERENCES odds_snapshots(id), rule_version_id INTEGER NOT NULL REFERENCES rule_versions(id),
+                judgement_as_of TEXT NOT NULL, frozen_at TEXT NOT NULL, status TEXT NOT NULL,
+                invalidation_reason TEXT, replaces_judgement_id INTEGER REFERENCES rule_judgement_runs(id),
+                official_pre_race_eligible INTEGER NOT NULL, exclusion_reason TEXT)""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS runner_rule_judgements (
+                judgement_run_id INTEGER NOT NULL REFERENCES rule_judgement_runs(id), horse_number INTEGER NOT NULL,
+                horse_name TEXT NOT NULL, judgement TEXT NOT NULL, satisfied_conditions_json TEXT NOT NULL,
+                failed_conditions_json TEXT NOT NULL, missing_reasons_json TEXT NOT NULL,
+                PRIMARY KEY(judgement_run_id, horse_number))""")
+            connection.execute("UPDATE application_metadata SET value = '13' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -450,8 +476,62 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("12",):
+        if row != ("13",):
             raise RuntimeError("SQLite schema is not ready")
+
+    def list_rule_versions(self) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute("SELECT * FROM rule_versions ORDER BY id").fetchall()
+
+    def create_rule_judgement(self, race_id: int, snapshot_id: int, rule_version_id: int,
+                              judgement_as_of: str, frozen_at: str, replaces_id: int | None = None,
+                              reason: str | None = None) -> int:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            race = connection.execute("SELECT * FROM races WHERE id=?", (race_id,)).fetchone()
+            snapshot = connection.execute("SELECT * FROM odds_snapshots WHERE id=? AND race_id=?", (snapshot_id, race_id)).fetchone()
+            rule = connection.execute("SELECT * FROM rule_versions WHERE id=?", (rule_version_id,)).fetchone()
+            if race is None: raise LookupError("race_not_found")
+            if snapshot is None: raise LookupError("snapshot_not_found")
+            if rule is None: raise LookupError("rule_version_not_found")
+            if snapshot["observed_at"] is None: raise ValueError("snapshot_time_missing")
+            if str(snapshot["observed_at"]) > judgement_as_of: raise ValueError("future_snapshot_not_allowed")
+            if judgement_as_of > frozen_at: raise ValueError("judgement_as_of_after_freeze")
+            if replaces_id is not None:
+                original = connection.execute("SELECT * FROM rule_judgement_runs WHERE id=? AND race_id=?", (replaces_id, race_id)).fetchone()
+                if original is None: raise LookupError("judgement_not_found")
+                if str(original["status"]) != "active": raise ValueError("judgement_already_invalidated")
+                connection.execute("UPDATE rule_judgement_runs SET status='invalidated', invalidation_reason=? WHERE id=?", (reason, replaces_id))
+            eligible = frozen_at < str(race["start_utc"]) and judgement_as_of < str(race["start_utc"])
+            cursor = connection.execute("""INSERT INTO rule_judgement_runs (
+                race_id,input_snapshot_id,rule_version_id,judgement_as_of,frozen_at,status,replaces_judgement_id,
+                official_pre_race_eligible,exclusion_reason) VALUES (?,?,?,?,?,'active',?,?,?)""",
+                (race_id,snapshot_id,rule_version_id,judgement_as_of,frozen_at,replaces_id,int(eligible),None if eligible else "発走後の判定です。"))
+            run_id = cursor.lastrowid
+            if run_id is None: raise RuntimeError("Judgement could not be saved")
+            race_runners = connection.execute("SELECT * FROM runners WHERE race_id=? ORDER BY horse_number", (race_id,)).fetchall()
+            snapshot_runners = connection.execute("SELECT * FROM odds_snapshot_runners WHERE snapshot_id=? ORDER BY horse_number", (snapshot_id,)).fetchall()
+            outputs = build_runner_judgements(race_runners, snapshot_runners)
+            connection.executemany("""INSERT INTO runner_rule_judgements VALUES (?,?,?,?,?,?,?)""", [
+                (run_id,item["horse_number"],item["horse_name"],item["judgement"],
+                 json.dumps(item["satisfied_conditions"],ensure_ascii=False),json.dumps(item["failed_conditions"],ensure_ascii=False),
+                 json.dumps(item["missing_reasons"],ensure_ascii=False)) for item in outputs])
+            return int(run_id)
+
+    def get_rule_judgement(self, run_id: int) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            run = connection.execute("SELECT * FROM rule_judgement_runs WHERE id=?", (run_id,)).fetchone()
+            if run is None: return None
+            rows = connection.execute("SELECT * FROM runner_rule_judgements WHERE judgement_run_id=? ORDER BY horse_number", (run_id,)).fetchall()
+            return run, rows
+
+    def list_rule_judgements(self, race_id: int) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            runs = connection.execute("SELECT id FROM rule_judgement_runs WHERE race_id=? ORDER BY id", (race_id,)).fetchall()
+        return [stored for row in runs if (stored := self.get_rule_judgement(int(row["id"]))) is not None]
 
     def register_jra_race_with_odds(
         self, card_id: int, odds: Sequence[dict[str, Any]], observation: dict[str, Any],
