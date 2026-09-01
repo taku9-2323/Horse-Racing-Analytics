@@ -13,8 +13,9 @@ type OddsSnapshot = {
   received_at: string;
   runners: RunnerOdds[];
 };
-type RunnerPrediction = { horse_number: number; raw_inverse_win_odds: number; win_market_share: number };
-type PredictionRun = {
+type MarketRunnerPrediction = { horse_number: number; raw_inverse_win_odds: number; win_market_share: number };
+type IndependentRunnerPrediction = { horse_number: number; win_probability: number | null; place_probability: number | null };
+type PredictionRunCommon = {
   id: number;
   input_snapshot_id: number;
   model_identifier: string;
@@ -24,9 +25,23 @@ type PredictionRun = {
   invalidation_reason: string | null;
   official_evaluation_eligible: boolean;
   evaluation_exclusion_reason: string | null;
-  runners: RunnerPrediction[];
   analysis_tags: Array<{ rule_key: string; version: number; context: Record<string, unknown> }>;
 };
+type MarketPredictionRun = PredictionRunCommon & {
+  prediction_kind: "market_baseline";
+  prediction_as_of: string;
+  rationale: string;
+  output_capabilities: ["win"];
+  runners: MarketRunnerPrediction[];
+};
+type IndependentPredictionRun = PredictionRunCommon & {
+  prediction_kind: "independent";
+  prediction_as_of: string;
+  rationale: string;
+  output_capabilities: Array<"win" | "place">;
+  runners: IndependentRunnerPrediction[];
+};
+type PredictionRun = MarketPredictionRun | IndependentPredictionRun;
 
 type Props = { raceId: number; runners: RunnerOdds[] };
 
@@ -155,9 +170,26 @@ export default function PredictionPanel({ raceId, runners }: Props) {
           {predictions.length === 0 && <p className="empty-note">まだ固定予測はありません。</p>}
           {predictions.map((prediction) => (
             <article className={`workflow-card ${prediction.status}`} key={prediction.id}>
-              <strong>{prediction.status === "active" ? "固定済み" : "無効化済み"} / 市場基準 {prediction.model_version}</strong>
+              <strong>{prediction.status === "active" ? "固定済み" : "無効化済み"} / {prediction.prediction_kind === "independent"
+                ? `独立予測 ${prediction.model_identifier} ${prediction.model_version}`
+                : `市場基準 ${prediction.model_version}`}</strong>
               <span>入力時点 #{prediction.input_snapshot_id} / 固定 {prediction.frozen_at}</span>
-              <span>{prediction.runners.map((runner) => `${runner.horse_number}番 ${(runner.win_market_share * 100).toFixed(2)}%`).join(" / ")}</span>
+              {prediction.prediction_kind === "independent" ? (
+                <>
+                  <span>モデル時点 {prediction.prediction_as_of} / 根拠 {prediction.rationale}</span>
+                  <span>{prediction.runners.map((runner) => {
+                    const values = [
+                      runner.win_probability === null ? null : `単勝予測確率 ${(runner.win_probability * 100).toFixed(2)}%`,
+                      runner.place_probability === null ? null : `複勝予測確率 ${(runner.place_probability * 100).toFixed(2)}%`,
+                    ].filter(Boolean).join(" / ");
+                    return `${runner.horse_number}番 ${values}`;
+                  }).join(" / ")}</span>
+                </>
+              ) : (
+                <span>{prediction.runners.map((runner) => {
+                  return `${runner.horse_number}番 単勝市場投票シェア ${(runner.win_market_share * 100).toFixed(2)}%`;
+                }).join(" / ")}</span>
+              )}
               <span>{prediction.analysis_tags.length === 0
                 ? "一致した有効タグなし"
                 : `一致タグ: ${prediction.analysis_tags.map((tag) => `${tag.rule_key} v${tag.version}`).join(" / ")}`}</span>

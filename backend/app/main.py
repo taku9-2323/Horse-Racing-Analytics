@@ -29,7 +29,8 @@ from app.race_analysis import (
     build_race_summary, parse_race_csv,
 )
 from app.predictions import (
-    CorrectionRequest, FreezeRequest, OddsSnapshot, PredictionRun, SnapshotCreate,
+    CorrectionRequest, FreezeRequest, IndependentPredictionFreezeRequest,
+    OddsSnapshot, PredictionRun, SnapshotCreate,
     prediction_response, snapshot_response, utc_iso,
 )
 from app.jra_acquisition import (
@@ -280,6 +281,43 @@ def create_app(
             raise HTTPException(status_code=500, detail="固定予測を読み込めません。")
         return prediction_response(*stored)
 
+    @app.post(
+        "/api/odds-snapshots/{snapshot_id}/independent-predictions/freeze",
+        response_model=PredictionRun,
+        status_code=201,
+    )
+    def freeze_independent_prediction(
+        snapshot_id: int, request: IndependentPredictionFreezeRequest,
+    ) -> PredictionRun:
+        try:
+            prediction_id = database.create_independent_prediction(
+                snapshot_id=snapshot_id,
+                model_identifier=request.model_identifier,
+                model_version=request.model_version,
+                prediction_as_of=utc_iso(request.prediction_as_of),
+                rationale=request.rationale,
+                frozen_at=utc_iso(current_time()),
+                outputs=[runner.model_dump() for runner in request.runners],
+            )
+        except LookupError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": str(error), "message": "オッズ時点が見つかりません。"},
+            ) from error
+        except ValueError as error:
+            messages = {
+                "runner_set_mismatch": "全出走馬のモデル出力を1件ずつ指定してください。",
+                "prediction_as_of_after_freeze": "モデル時点は固定時刻以前にしてください。",
+            }
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(error), "message": messages.get(str(error), "モデル出力を固定できません。")},
+            ) from error
+        stored = database.get_prediction(prediction_id)
+        if stored is None:
+            raise HTTPException(status_code=500, detail="固定した独立予測を読み込めません。")
+        return prediction_response(*stored)
+
     @app.put("/api/predictions/{prediction_id}")
     def reject_prediction_edit(prediction_id: int) -> None:
         if database.get_prediction(prediction_id) is None:
@@ -291,6 +329,14 @@ def create_app(
         original = database.get_prediction(prediction_id)
         if original is None:
             raise HTTPException(status_code=404, detail={"code": "prediction_not_found", "message": "固定予測が見つかりません。"})
+        if str(original[0]["prediction_kind"]) == "independent":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "independent_prediction_requires_new_output",
+                    "message": "独立予測の訂正はモデルを再実行し、新しい出力として固定してください。",
+                },
+            )
         try:
             replacement_id = database.create_prediction(
                 request.input_snapshot_id, str(original[0]["model_identifier"]),

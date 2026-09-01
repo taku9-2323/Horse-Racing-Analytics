@@ -250,7 +250,9 @@ describe("prediction freezing", () => {
       source: "ui", runners: [{ horse_number: 1, win_odds: 2.4, place_odds_min: 1.2, place_odds_max: 1.5 }] };
     const historicalSnapshot = { ...snapshot, id: 9, observed_at: "2026-08-30T04:45:00Z",
       runners: [{ horse_number: 1, win_odds: 2, place_odds_min: 1.2, place_odds_max: 1.5 }] };
-    const prediction = { id: 20, race_id: 1, input_snapshot_id: 10, model_identifier: "market-baseline", model_version: "1.0",
+    const prediction = { id: 20, race_id: 1, input_snapshot_id: 10, prediction_kind: "market_baseline",
+      model_identifier: "market-baseline", model_version: "1.0", prediction_as_of: "2026-08-30T04:55:00Z",
+      rationale: "オッズから計算した市場基準", output_capabilities: ["win"],
       frozen_at: "2026-08-30T05:01:00Z", status: "active", invalidation_reason: null, replaces_prediction_id: null,
       official_evaluation_eligible: true, evaluation_exclusion_reason: null,
       runners: [{ horse_number: 1, raw_inverse_win_odds: 0.5, win_market_share: 1 }],
@@ -295,7 +297,7 @@ describe("prediction freezing", () => {
     expect(await screen.findByText("固定済み / 市場基準 1.0")).toBeTruthy();
     expect(screen.getByText("公式評価対象")).toBeTruthy();
     expect(screen.getByText(/入力時点 #10/)).toBeTruthy();
-    expect(screen.getByText("1番 100.00%")).toBeTruthy();
+    expect(screen.getByText("1番 単勝市場投票シェア 100.00%")).toBeTruthy();
     expect(screen.getByText("一致タグ: market_odds_level v1")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("訂正理由"), { target: { value: "入力ミス" } });

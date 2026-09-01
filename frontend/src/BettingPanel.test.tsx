@@ -104,17 +104,22 @@ describe("bet and result workflow", () => {
     }));
   });
 
-  it("keeps the result CSV fallback visible when JRA acquisition stops", async () => {
+  it("continues through CSV settlement when JRA acquisition stops", async () => {
     const emptyLedger = {
       bets: [], result_version: null, settlements: [], totals: totals(),
       by_decision_type: { candidate: totals(), discretionary: totals() },
+    };
+    const settledLedger = {
+      ...emptyLedger, result_version: { id: 4, version: 1 },
     };
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse(emptyLedger))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse({
         detail: { code: "acquisition_stopped", message: "JRAからの取得を停止しました。CSV取込を使用してください。" },
-      }, 503)));
+      }, 503))
+      .mockResolvedValueOnce(jsonResponse({ id: 4, version: 1 }, 201))
+      .mockResolvedValueOnce(jsonResponse(settledLedger)));
 
     render(<BettingPanel raceId={7} runners={[{ horse_number: 1, horse_name: "アカツキ" }]} />);
     fireEvent.click(screen.getByRole("button", { name: "購入・収支を表示" }));
@@ -123,6 +128,13 @@ describe("bet and result workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "JRA結果を取得して精算" }));
 
     expect(await screen.findByText("JRAからの取得を停止しました。CSV取込を使用してください。")).toBeTruthy();
-    expect(screen.getByLabelText("結果CSVファイル")).toBeTruthy();
+    const resultCsv = new File([
+      "horse_number,finish_position,status,win_payout_per_100,place_payout_per_100\n1,1,確定,420,150",
+    ], "results.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByLabelText("結果CSVファイル"), { target: { files: [resultCsv] } });
+    fireEvent.click(screen.getByRole("button", { name: "結果を取り込んで精算" }));
+
+    expect(await screen.findByText("公式結果を取り込み、購入を精算しました。")).toBeTruthy();
+    expect(screen.getByText("結果 v1 精算済み")).toBeTruthy();
   });
 });

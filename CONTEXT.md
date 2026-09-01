@@ -13,8 +13,8 @@ It does not place bets, scrape netkeiba, access authenticated JRA pages, crawl a
 - **Runner**: A horse entered in a race, including gate, horse number, age, sex, assigned weight, and status.
 - **Odds snapshot**: The win and place odds observed at one recorded time. Place odds are a lower/upper range.
 - **Source observation**: An immutable, versioned record of facts obtained from one source response, identified by source URL, receipt time, parser version, response hash, and validation outcome. A later correction creates another observation rather than overwriting it.
-- **Prediction model**: A versioned method that produces a win probability, a place probability, or both. The initial market baseline produces only a win market-share proxy; there is no initial independent place-probability model.
-- **Prediction run**: The immutable output of one prediction model for every runner in one race, based on specified input snapshots and an as-of time.
+- **Prediction model**: A versioned method that produces a win probability, a place probability, or both. Its identifier, version, as-of time, rationale, and declared output capabilities are fixed with every run. The initial market baseline is a separate kind that produces only a win market-share proxy.
+- **Prediction run**: The immutable output of one prediction model for every runner in one race, based on a specified input snapshot and an as-of time. Market fields and independent probability fields use separate API types and labels.
 - **Market baseline**: A win-market consensus proxy inferred from odds. Raw inverse odds and normalized win betting-share proxies are kept separately and are not labeled objective win probabilities.
 - **Place break-even range**: The reciprocals of the displayed place-odds range. It states the hit rate needed to break even at each possible payout, not a predicted place probability.
 - **Experimental rule set**: A versioned, independently evaluated hypothesis that may tag observations or, only when an evidence-based magnitude exists, adjust a probability model. Initial literature-derived rules are disabled tags with no multiplier.

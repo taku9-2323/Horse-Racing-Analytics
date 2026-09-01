@@ -388,6 +388,61 @@ class SqliteDatabase:
             connection.execute(
                 "UPDATE application_metadata SET value = '11' WHERE key = 'schema_version'"
             )
+            prediction_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(prediction_runs)").fetchall()
+            }
+            for definition in (
+                "prediction_kind TEXT NOT NULL DEFAULT 'market_baseline'",
+                "prediction_as_of TEXT NOT NULL DEFAULT ''",
+                "rationale TEXT NOT NULL DEFAULT 'オッズから計算した市場基準'",
+            ):
+                column_name = definition.split()[0]
+                if column_name not in prediction_columns:
+                    connection.execute(f"ALTER TABLE prediction_runs ADD COLUMN {definition}")
+            connection.execute(
+                "UPDATE prediction_runs SET prediction_as_of = frozen_at WHERE prediction_as_of = ''"
+            )
+            runner_prediction_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(runner_predictions)").fetchall()
+            }
+            for definition in ("win_probability REAL", "place_probability REAL"):
+                column_name = definition.split()[0]
+                if column_name not in runner_prediction_columns:
+                    connection.execute(f"ALTER TABLE runner_predictions ADD COLUMN {definition}")
+            raw_inverse_column = next(
+                row for row in connection.execute("PRAGMA table_info(runner_predictions)").fetchall()
+                if row[1] == "raw_inverse_win_odds"
+            )
+            if raw_inverse_column[3] == 1:
+                connection.execute(
+                    """
+                    CREATE TABLE runner_predictions_v12 (
+                        prediction_run_id INTEGER NOT NULL REFERENCES prediction_runs(id),
+                        horse_number INTEGER NOT NULL,
+                        raw_inverse_win_odds REAL,
+                        win_market_share REAL,
+                        win_probability REAL,
+                        place_probability REAL,
+                        PRIMARY KEY (prediction_run_id, horse_number)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runner_predictions_v12 (
+                        prediction_run_id, horse_number, raw_inverse_win_odds,
+                        win_market_share, win_probability, place_probability
+                    )
+                    SELECT prediction_run_id, horse_number, raw_inverse_win_odds,
+                           win_market_share, win_probability, place_probability
+                    FROM runner_predictions
+                    """
+                )
+                connection.execute("DROP TABLE runner_predictions")
+                connection.execute("ALTER TABLE runner_predictions_v12 RENAME TO runner_predictions")
+            connection.execute(
+                "UPDATE application_metadata SET value = '12' WHERE key = 'schema_version'"
+            )
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -395,7 +450,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("11",):
+        if row != ("12",):
             raise RuntimeError("SQLite schema is not ready")
 
     def register_jra_race_with_odds(
@@ -808,12 +863,14 @@ class SqliteDatabase:
                 INSERT INTO prediction_runs (
                     race_id, input_snapshot_id, model_identifier, model_version,
                     frozen_at, status, replaces_prediction_id,
-                    official_evaluation_eligible, evaluation_exclusion_reason
-                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                    official_evaluation_eligible, evaluation_exclusion_reason,
+                    prediction_kind, prediction_as_of, rationale
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, 'market_baseline', ?, ?)
                 """,
                 (
                     snapshot["race_id"], snapshot_id, model_identifier, model_version,
                     frozen_at, replaces_prediction_id, int(eligible), exclusion,
+                    snapshot["observed_at"] or frozen_at, "オッズから計算した市場基準",
                 ),
             )
             prediction_id = cursor.lastrowid
@@ -886,6 +943,76 @@ class SqliteDatabase:
                         """,
                         (prediction_id, tag["id"], json.dumps(context, ensure_ascii=False)),
                     )
+        return prediction_id
+
+    def create_independent_prediction(
+        self,
+        snapshot_id: int,
+        model_identifier: str,
+        model_version: str,
+        prediction_as_of: str,
+        rationale: str,
+        frozen_at: str,
+        outputs: Sequence[dict[str, Any]],
+    ) -> int:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            snapshot = connection.execute(
+                "SELECT * FROM odds_snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+            if snapshot is None:
+                raise LookupError("snapshot_not_found")
+            race = connection.execute(
+                "SELECT * FROM races WHERE id = ?", (snapshot["race_id"],)
+            ).fetchone()
+            if race is None:
+                raise LookupError("race_not_found")
+            expected = {
+                int(row["horse_number"])
+                for row in connection.execute(
+                    "SELECT horse_number FROM runners WHERE race_id = ?",
+                    (snapshot["race_id"],),
+                ).fetchall()
+            }
+            supplied = {int(output["horse_number"]) for output in outputs}
+            if supplied != expected or len(outputs) != len(expected):
+                raise ValueError("runner_set_mismatch")
+            if prediction_as_of > frozen_at:
+                raise ValueError("prediction_as_of_after_freeze")
+            eligible = frozen_at < str(race["start_utc"]) and prediction_as_of < str(race["start_utc"])
+            exclusion = None if eligible else "発走後のモデル出力または固定のため公式評価対象外"
+            cursor = connection.execute(
+                """
+                INSERT INTO prediction_runs (
+                    race_id, input_snapshot_id, model_identifier, model_version,
+                    frozen_at, status, official_evaluation_eligible,
+                    evaluation_exclusion_reason, prediction_kind,
+                    prediction_as_of, rationale
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, 'independent', ?, ?)
+                """,
+                (
+                    snapshot["race_id"], snapshot_id, model_identifier, model_version,
+                    frozen_at, int(eligible), exclusion, prediction_as_of, rationale,
+                ),
+            )
+            prediction_id = cursor.lastrowid
+            if prediction_id is None:
+                raise RuntimeError("Independent prediction could not be saved")
+            connection.executemany(
+                """
+                INSERT INTO runner_predictions (
+                    prediction_run_id, horse_number, raw_inverse_win_odds,
+                    win_market_share, win_probability, place_probability
+                ) VALUES (?, ?, NULL, NULL, ?, ?)
+                """,
+                [
+                    (
+                        prediction_id, output["horse_number"],
+                        output.get("win_probability"), output.get("place_probability"),
+                    )
+                    for output in outputs
+                ],
+            )
         return prediction_id
 
     def get_prediction(
@@ -1431,7 +1558,9 @@ class SqliteDatabase:
                        prediction.status, prediction.official_evaluation_eligible,
                        prediction.frozen_at, 'win' AS bet_type,
                        race.racecourse, runner_prediction.horse_number,
-                       runner_prediction.win_market_share AS predicted_probability,
+                       CASE WHEN prediction.prediction_kind = 'independent'
+                            THEN runner_prediction.win_probability
+                            ELSE runner_prediction.win_market_share END AS predicted_probability,
                        snapshot_runner.win_odds,
                        snapshot_runner.win_odds AS odds_value,
                        snapshot_runner.popularity,
@@ -1450,7 +1579,36 @@ class SqliteDatabase:
                   ON runner_result.result_version_id = result_version.id
                  AND runner_result.horse_number = runner_prediction.horse_number
                  AND runner_result.status = '確定'
-                ORDER BY prediction.id, runner_prediction.horse_number
+                WHERE prediction.prediction_kind = 'market_baseline'
+                   OR runner_prediction.win_probability IS NOT NULL
+                UNION ALL
+                SELECT prediction.id AS prediction_run_id,
+                       prediction.model_identifier, prediction.model_version,
+                       prediction.status, prediction.official_evaluation_eligible,
+                       prediction.frozen_at, 'place' AS bet_type,
+                       race.racecourse, runner_prediction.horse_number,
+                       runner_prediction.place_probability AS predicted_probability,
+                       snapshot_runner.win_odds,
+                       snapshot_runner.place_odds_min AS odds_value,
+                       snapshot_runner.popularity,
+                       CASE WHEN runner_result.place_payout_per_100 > 0 THEN 1 ELSE 0 END AS outcome
+                FROM prediction_runs AS prediction
+                JOIN races AS race ON race.id = prediction.race_id
+                JOIN runner_predictions AS runner_prediction
+                  ON runner_prediction.prediction_run_id = prediction.id
+                JOIN ranked_snapshot_runners AS snapshot_runner
+                  ON snapshot_runner.snapshot_id = prediction.input_snapshot_id
+                 AND snapshot_runner.horse_number = runner_prediction.horse_number
+                JOIN result_versions AS result_version
+                  ON result_version.race_id = prediction.race_id
+                 AND result_version.status = 'active'
+                JOIN runner_results AS runner_result
+                  ON runner_result.result_version_id = result_version.id
+                 AND runner_result.horse_number = runner_prediction.horse_number
+                 AND runner_result.status = '確定'
+                WHERE prediction.prediction_kind = 'independent'
+                  AND runner_prediction.place_probability IS NOT NULL
+                ORDER BY 1, 6, 9
                 """
             ).fetchall()
             tag_rows = connection.execute(
@@ -1505,12 +1663,15 @@ class SqliteDatabase:
         predictions: list[PredictionEvaluationRow] = []
         for row in prediction_rows:
             prediction_id = int(row["prediction_run_id"])
+            prediction_bet_type = str(row["bet_type"])
+            if prediction_bet_type not in ("win", "place"):
+                raise ValueError(f"Unsupported prediction type: {prediction_bet_type}")
             predictions.append(PredictionEvaluationRow(
                 prediction_run_id=prediction_id,
                 model_identifier=str(row["model_identifier"]),
                 model_version=str(row["model_version"]),
                 frozen_at=str(row["frozen_at"]),
-                bet_type="win",
+                bet_type=cast(Literal["win", "place"], prediction_bet_type),
                 racecourse=str(row["racecourse"]),
                 odds_value=float(row["odds_value"]),
                 popularity=int(row["popularity"]),

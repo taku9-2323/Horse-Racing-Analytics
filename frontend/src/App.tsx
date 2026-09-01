@@ -352,8 +352,8 @@ function App() {
       <DataMaintenancePanel />
 
       <footer>
-        <span>チケット07</span>
-        <span>条件別の予測精度・購入収支</span>
+        <span>個人運用MVP / チケット10</span>
+        <span>市場基準と独立予測を分離したモデル追加境界を検証済み</span>
       </footer>
     </main>
   );
