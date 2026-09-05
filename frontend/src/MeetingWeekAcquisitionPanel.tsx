@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type RaceState = "schedule_only" | "entries_waiting" | "odds_waiting" | "judgement_waiting" | "ready" | "stopped";
+export type RaceState = "schedule_only" | "entries_waiting" | "odds_waiting" | "judgement_waiting" | "ready" | "stopped";
 
-type MeetingWeekRace = {
+export type MeetingWeekRace = {
   race_date: string; racecourse: string; meeting_number: number; meeting_day: number;
   race_number: number; race_name: string; start_time: string; surface: string;
   distance_m: number; condition_text: string; state: RaceState; race_id: number | null;
   card_id: number | null; snapshot_id: number | null; judgement_id: number | null;
+  rule_version_id: number | null; judgement_as_of: string | null;
+  judgement_frozen_at: string | null; odds_observed_at: string | null;
+  attention_horse_count: number | null; judged_runner_count: number | null;
+  attention_ratio: number | null; attention_level: "none" | "low" | "medium" | "high" | null;
+  display_state: "entries_waiting" | "odds_waiting" | "judgement_waiting" | "no_attention" | "attention" | "acquisition_failed" | "post_start";
+  has_started: boolean;
   error_code: string | null; updated_at: string;
 };
 
-type MeetingWeekSummary = {
+export type MeetingWeekSummary = {
   run_id: number; week_start: string; week_end: string; started_at: string;
   completed_at: string | null; status: "running" | "completed" | "stopped";
   target_count: number; processed_count: number; ready_count: number;
@@ -37,7 +43,15 @@ const parseError = async (response: Response, fallback: string) => {
   }
 };
 
-export default function MeetingWeekAcquisitionPanel() {
+type Props = {
+  onSummaryChange?: (summary: MeetingWeekSummary | null) => void;
+  onNavigateToImport?: () => void;
+  showRaceList?: boolean;
+};
+
+export default function MeetingWeekAcquisitionPanel({
+  onSummaryChange, onNavigateToImport, showRaceList = true,
+}: Props) {
   const [summary, setSummary] = useState<MeetingWeekSummary | null>(null);
   const [state, setState] = useState<"loading" | "idle" | "starting" | "error">("loading");
   const [message, setMessage] = useState("");
@@ -52,15 +66,17 @@ export default function MeetingWeekAcquisitionPanel() {
     const response = await fetch("/api/acquisition/jra/meeting-weeks/current", { signal });
     if (response.status === 404) {
       setSummary(null);
+      onSummaryChange?.(null);
       setState("idle");
       return null;
     }
     if (!response.ok) throw new Error(await parseError(response, "開催週の取得状況を読み込めませんでした。"));
     const loaded = (await response.json()) as MeetingWeekSummary;
     setSummary(loaded);
+    onSummaryChange?.(loaded);
     setState("idle");
     return loaded;
-  }, []);
+  }, [onSummaryChange]);
 
   const poll = useCallback(async () => {
     try {
@@ -95,7 +111,11 @@ export default function MeetingWeekAcquisitionPanel() {
       if (!response.ok && response.status !== 409) {
         throw new Error(await parseError(response, "開催週の取得を開始できませんでした。"));
       }
-      if (response.ok) setSummary((await response.json()) as MeetingWeekSummary);
+      if (response.ok) {
+        const started = (await response.json()) as MeetingWeekSummary;
+        setSummary(started);
+        onSummaryChange?.(started);
+      }
       await poll();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "開催週の取得を開始できませんでした。");
@@ -104,7 +124,8 @@ export default function MeetingWeekAcquisitionPanel() {
   };
 
   const isRunning = summary?.status === "running" || state === "starting";
-  const buttonLabel = summary === null ? "開催週のレースを取得" : "開催週のレースを更新";
+  const buttonLabel = summary === null ? "開催週のレースを取得"
+    : summary.status === "stopped" ? "未取得・失敗分を再試行" : "開催週のレースを更新";
 
   return <section className="panel meeting-week-panel" aria-labelledby="meeting-week-heading">
     <div className="panel-heading">
@@ -115,6 +136,7 @@ export default function MeetingWeekAcquisitionPanel() {
       <div>
         <p>開いた日の週に開催されるJRAレースを、取得できた情報まで保存します。</p>
         {summary && <strong>{summary.week_start} — {summary.week_end}</strong>}
+        {summary && <small className="last-acquired-at">最終取得 {summary.last_updated_at}</small>}
       </div>
       <button type="button" disabled={isRunning} onClick={() => void start()}>
         {isRunning ? "開催週を取得中…" : buttonLabel}
@@ -130,9 +152,11 @@ export default function MeetingWeekAcquisitionPanel() {
       </div>
       {summary.status === "stopped" && <div className="import-error" role="alert">
         <strong>{summary.stop_reason ?? "開催週の取得を停止しました。"}</strong>
-        <a href="#race-csv">CSV取込へ移動</a>
+        {onNavigateToImport
+          ? <button type="button" onClick={onNavigateToImport}>データ取込へ移動</button>
+          : <a href="#race-csv">CSV取込へ移動</a>}
       </div>}
-      {summary.races.length > 0 && <ul className="meeting-week-races" aria-label="取得済みレース">
+      {showRaceList && summary.races.length > 0 && <ul className="meeting-week-races" aria-label="取得済みレース">
         {summary.races.map((race) => <li key={`${race.race_date}-${race.racecourse}-${race.race_number}`}>
           <time dateTime={`${race.race_date}T${race.start_time}`}>{race.race_date} {race.start_time}</time>
           <strong>{race.racecourse} {race.race_number}R</strong>

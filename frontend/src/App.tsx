@@ -4,11 +4,11 @@ import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
 import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
-import MeetingWeekAcquisitionPanel from "./MeetingWeekAcquisitionPanel";
 import EvaluationPanel from "./EvaluationPanel";
 import MarketAttentionPanel from "./MarketAttentionPanel";
 import RuleJudgementPanel from "./RuleJudgementPanel";
 import MarketRuleComparisonPanel from "./MarketRuleComparisonPanel";
+import WeeklyRaceWorkspace from "./WeeklyRaceWorkspace";
 
 type HealthStatus = "ok" | "error";
 
@@ -54,6 +54,7 @@ const latestRaceFirst = (items: RaceListItem[]) => [...items].sort(
 );
 
 function App() {
+  const [activeArea, setActiveArea] = useState<"weekly" | "evaluation" | "import" | "settings">("weekly");
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
@@ -172,6 +173,14 @@ function App() {
         </p>
       </header>
 
+      <nav className="primary-nav" aria-label="主要画面">
+        {([
+          ["weekly", "今週のレース"], ["evaluation", "成績・検証"],
+          ["import", "データ取込"], ["settings", "設定・バックアップ"],
+        ] as const).map(([area, label]) => <button type="button" key={area}
+          aria-current={activeArea === area ? "page" : undefined} onClick={() => setActiveArea(area)}>{label}</button>)}
+      </nav>
+
       <section className="panel" aria-labelledby="system-status-heading">
         <div className="panel-heading">
           <div>
@@ -222,9 +231,9 @@ function App() {
         )}
       </section>
 
-      <MeetingWeekAcquisitionPanel />
+      {activeArea === "weekly" && <WeeklyRaceWorkspace onNavigate={setActiveArea} />}
 
-      <JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
+      {activeArea === "import" && <><JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
 
       <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
         <div className="panel-heading">
@@ -350,19 +359,19 @@ function App() {
             />
           </div>
         )}
-      </section>
+      </section></>}
 
-      <section className="panel analysis-panel" aria-label="分析タグ管理">
+      {activeArea === "evaluation" && <><section className="panel analysis-panel" aria-label="分析タグ管理">
         <AnalysisTagsPanel />
       </section>
 
-      <EvaluationPanel />
+      <EvaluationPanel /></>}
 
-      <DataMaintenancePanel />
+      {activeArea === "settings" && <DataMaintenancePanel />}
 
       <footer>
-          <span>個人運用MVP / チケット18</span>
-          <span>開催週を一度の操作で取得し、公開段階と進捗を保存</span>
+          <span>個人運用MVP / チケット19</span>
+          <span>開催週から注目レースを絞り、固定した判断材料を確認</span>
       </footer>
     </main>
   );

@@ -78,5 +78,6 @@ it("keeps partial progress visible and points to CSV when JRA acquisition stops"
   const alert = await screen.findByRole("alert");
   expect(within(alert).getByText(/CSV取込を使用してください/)).toBeTruthy();
   expect(screen.getByText("出馬表待ち")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "開催週のレースを更新" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "未取得・失敗分を再試行" })).toBeTruthy();
+  expect(screen.getByText(/最終取得 2026-09-02T03:01:00Z/)).toBeTruthy();
 });

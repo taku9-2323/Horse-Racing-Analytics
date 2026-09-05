@@ -55,6 +55,19 @@ class MeetingWeekRace(BaseModel):
     card_id: int | None
     snapshot_id: int | None
     judgement_id: int | None
+    rule_version_id: int | None
+    judgement_as_of: str | None
+    judgement_frozen_at: str | None
+    odds_observed_at: str | None
+    attention_horse_count: int | None
+    judged_runner_count: int | None
+    attention_ratio: float | None
+    attention_level: Literal["none", "low", "medium", "high"] | None
+    display_state: Literal[
+        "entries_waiting", "odds_waiting", "judgement_waiting", "no_attention",
+        "attention", "acquisition_failed", "post_start",
+    ]
+    has_started: bool
     error_code: str | None
     updated_at: str
 
@@ -337,7 +350,62 @@ class JraMeetingWeekAcquirer:
         return path.read_bytes(), "text/html", cached_at
 
 
-def meeting_week_response(database: SqliteDatabase, week_start: str) -> MeetingWeekSummary | None:
+def _attention_level(ratio: float) -> Literal["none", "low", "medium", "high"]:
+    if ratio == 0:
+        return "none"
+    if ratio <= 0.2:
+        return "low"
+    if ratio <= 0.4:
+        return "medium"
+    return "high"
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _meeting_week_race(row: Any, now: datetime) -> MeetingWeekRace:
+    data = dict(row)
+    judgement_id = data["judgement_id"]
+    stored_attention_count = data.pop("attention_horse_count")
+    stored_judged_count = data.pop("judged_runner_count")
+    attention_count = int(stored_attention_count) if judgement_id is not None else None
+    judged_count = int(stored_judged_count) if judgement_id is not None else None
+    ratio = (
+        attention_count / judged_count
+        if attention_count is not None and judged_count is not None and judged_count > 0
+        else None
+    )
+    start_utc = data.pop("start_utc")
+    has_started = start_utc is not None and _parse_utc(str(start_utc)) <= now.astimezone(timezone.utc)
+    state = str(data["state"])
+    if has_started:
+        display_state = "post_start"
+    elif state == "stopped":
+        display_state = "acquisition_failed"
+    elif state in {"schedule_only", "entries_waiting"}:
+        display_state = "entries_waiting"
+    elif state == "odds_waiting":
+        display_state = "odds_waiting"
+    elif state == "judgement_waiting" or judgement_id is None:
+        display_state = "judgement_waiting"
+    else:
+        display_state = "attention" if attention_count else "no_attention"
+    return MeetingWeekRace(
+        **data,
+        attention_horse_count=attention_count,
+        judged_runner_count=judged_count,
+        attention_ratio=ratio,
+        attention_level=None if ratio is None else _attention_level(ratio),
+        display_state=cast(Any, display_state),
+        has_started=has_started,
+    )
+
+
+def meeting_week_response(
+    database: SqliteDatabase, week_start: str, now: datetime,
+) -> MeetingWeekSummary | None:
     stored = database.get_meeting_week(week_start)
     if stored is None:
         return None
@@ -355,7 +423,7 @@ def meeting_week_response(database: SqliteDatabase, week_start: str) -> MeetingW
         ready_count=int(run["ready_count"]), waiting_count=int(run["waiting_count"]),
         failed_count=int(run["failed_count"]), stop_reason=run["stop_reason"], last_target=run["last_target"],
         last_updated_at=last_updated,
-        races=[MeetingWeekRace(**dict(row)) for row in races],
+        races=[_meeting_week_race(row, now) for row in races],
     )
 
 

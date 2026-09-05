@@ -12,7 +12,7 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 0;
   min-height: 100vh;
   background:
     radial-gradient(circle at 85% 10%, rgba(174, 138, 68, 0.18), transparent 34rem),
@@ -49,6 +49,10 @@ button {
 }
 
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 3px solid #f6d788;
+  outline-offset: 3px;
+}
 
 .shell {
   width: min(1040px, calc(100% - 40px));
@@ -96,6 +100,10 @@ h1 {
   font-size: 1.02rem;
   line-height: 1.85;
 }
+
+.primary-nav { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin-bottom: 24px; padding: 6px; border: 1px solid rgba(220, 204, 170, .19); background: rgba(13, 19, 16, .94); backdrop-filter: blur(18px); }
+.primary-nav button { border-color: transparent; color: #b8c2bc; background: transparent; }
+.primary-nav button[aria-current="page"] { border-color: #c6a766; color: #111815; background: #c6a766; }
 
 .panel {
   border: 1px solid rgba(220, 204, 170, 0.19);
@@ -221,6 +229,7 @@ th { color: #8f9b94; font-weight: 500; }
 }
 .meeting-week-actions p { margin: 0 0 8px; color: #8f9b94; font-size: 0.84rem; }
 .meeting-week-actions strong { color: #dcccaa; font-size: 0.82rem; }
+.last-acquired-at { display: block; margin-top: 6px; color: #8f9b94; font-size: .72rem; }
 .meeting-week-result { border-top: 1px solid rgba(220, 204, 170, 0.14); }
 .meeting-week-progress { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto; align-items: center; gap: 14px; padding: 20px 28px; }
 .meeting-week-progress strong { color: #dcccaa; }
@@ -236,6 +245,54 @@ th { color: #8f9b94; font-weight: 500; }
 .race-state { justify-self: end; padding: 5px 8px; border: 1px solid rgba(220, 204, 170, 0.2); border-radius: 999px; white-space: nowrap; }
 .race-state.ready { border-color: rgba(101, 201, 132, 0.4); color: #a8ceb2; }
 .race-state.stopped { border-color: rgba(220, 116, 107, 0.4); color: #e4aaa1; }
+.weekly-list-panel, .weekly-detail { margin-top: 24px; border: 1px solid rgba(220, 204, 170, 0.19); background: rgba(21, 30, 26, 0.88); }
+.weekly-list-heading, .weekly-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 24px 28px; }
+.weekly-list-heading span, .weekly-detail-header span { color: #c6a766; font-size: .72rem; letter-spacing: .08em; }
+.weekly-list-heading h2, .weekly-detail-header h2 { margin: 5px 0 0; font: 500 1.8rem Georgia, "Yu Mincho", serif; }
+.weekly-list-heading label { color: #c8d0cb; font-size: .8rem; }
+.date-tabs, .course-tabs, .race-filters { display: flex; gap: 8px; padding: 12px 28px; border-top: 1px solid rgba(220, 204, 170, .12); overflow-x: auto; }
+.date-tabs button, .course-tabs button, .race-filters button, .back-button {
+  border-color: rgba(220, 204, 170, .22); color: #d9dfdb; background: transparent; white-space: nowrap;
+}
+.date-tabs button[aria-selected="true"], .course-tabs button[aria-selected="true"], .race-filters button[aria-pressed="true"] {
+  border-color: #c6a766; color: #111815; background: #c6a766;
+}
+.weekly-race-list { margin: 0; padding: 0; border-top: 1px solid rgba(220, 204, 170, .12); list-style: none; }
+.weekly-race-list li + li { border-top: 1px solid rgba(220, 204, 170, .08); }
+.weekly-race-list li > button { display: grid; grid-template-columns: 4rem 6.5rem minmax(7rem, 1fr) minmax(8rem, 1fr) 6.8rem 8.5rem 5.2rem; align-items: center; gap: 10px; width: 100%; border: 0; border-left: 7px solid transparent; border-radius: 0; padding: 14px 21px; color: #f4f0e8; background: transparent; text-align: left; }
+.weekly-race-list li > button:not(:disabled):hover { background: rgba(255, 255, 255, .04); }
+.weekly-race-list time, .race-name, .race-meta, .attention-count, .acquisition-state { overflow: hidden; color: #aeb8b2; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.acquisition-state { text-align: right; }
+.mobile-only { display: none; }
+.attention-band { justify-self: start; border: 1px solid rgba(220, 204, 170, .22); border-radius: 999px; padding: 5px 8px; font-size: .72rem; white-space: nowrap; }
+.weekly-race-list li > button:has(.level-low) { border-left-color: #768c79; background: rgba(118, 140, 121, .07); }
+.weekly-race-list li > button:has(.level-medium) { border-left-color: #c6a766; background: rgba(198, 167, 102, .11); }
+.weekly-race-list li > button:has(.level-high) { border-left-color: #efb34f; background: rgba(239, 179, 79, .19); }
+.level-medium, .level-high { border-color: #c6a766; color: #f6d788; }
+.weekly-empty { padding: 28px; }
+.attention-disclaimer { padding: 16px 28px; border-top: 1px solid rgba(220, 204, 170, .12); color: #b5c0b9; background: rgba(0, 0, 0, .13); font-size: .76rem; line-height: 1.7; }
+.back-button { margin: 20px 28px 0; }
+.weekly-detail-header { align-items: end; }
+.weekly-detail-header p { margin: 7px 0 0; color: #aeb8b2; }
+.weekly-detail-header > strong { color: #f6d788; }
+.detail-data-state { margin: -10px 28px 20px; color: #b5c0b9; font-size: .78rem; }
+.decision-times { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; padding: 0 28px 22px; }
+.decision-times div { padding: 11px 14px; border: 1px solid rgba(220, 204, 170, .12); }
+.decision-times dt, .decision-runner dt { color: #8f9b94; font-size: .68rem; }
+.decision-times dd, .decision-runner dd { margin: 4px 0 0; font-size: .78rem; }
+.decision-runner-list { border-top: 1px solid rgba(220, 204, 170, .12); }
+.decision-runner { padding: 18px 28px; border-left: 7px solid transparent; }
+.decision-runner + .decision-runner { border-top: 1px solid rgba(220, 204, 170, .08); }
+.decision-runner.is-attention { border-left-color: #efb34f; background: rgba(239, 179, 79, .1); }
+.decision-runner > div:first-child { display: flex; align-items: center; gap: 12px; }
+.decision-runner > div:first-child b { color: #c6a766; font-size: 1.15rem; }
+.decision-badge { margin-left: auto; border: 1px solid #c6a766; border-radius: 999px; padding: 4px 8px; color: #f6d788; font-size: .72rem; }
+.decision-runner p { margin: 9px 0; color: #b9c3bd; font-size: .78rem; }
+.decision-runner dl { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 0; }
+.detail-next { padding: 24px 28px; border-top: 1px solid rgba(220, 204, 170, .12); }
+.detail-next p { margin: 7px 0 0; color: #8f9b94; font-size: .8rem; }
+.detail-next-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.detail-next-actions button { padding: 7px 10px; font-size: .74rem; }
 .maintenance-actions a {
   display: inline-flex;
   align-items: center;
@@ -367,6 +424,8 @@ footer {
     width: min(100% - 24px, 1040px);
     padding-top: 42px;
   }
+  .primary-nav { grid-template-columns: repeat(2, 1fr); }
+  .primary-nav button { padding: 9px 5px; font-size: .75rem; }
 
   .panel-heading {
     align-items: flex-start;
@@ -406,6 +465,21 @@ footer {
   .meeting-week-races li { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 13px 20px; }
   .meeting-week-races li > span:not(.race-state) { grid-column: 1; }
   .race-state { grid-column: 2; grid-row: 1 / span 2; }
+  .weekly-list-heading, .weekly-detail-header { align-items: flex-start; flex-direction: column; padding: 20px; }
+  .date-tabs, .course-tabs, .race-filters { padding-right: 20px; padding-left: 20px; }
+  .weekly-race-list li > button { grid-template-columns: 2.3rem 3.4rem 2.8rem 3.2rem 2rem 3rem; gap: 2px; padding: 12px 3px; font-size: .65rem; }
+  .weekly-race-list .race-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .desktop-only { display: none; }
+  .mobile-only { display: block; }
+  .race-meta { font-size: .62rem; }
+  .attention-band { overflow: hidden; padding: 4px 2px; font-size: .5rem; text-overflow: ellipsis; }
+  .acquisition-state { font-size: .5rem; }
+  .attention-count { text-align: right; }
+  .back-button { margin-left: 20px; }
+  .decision-times { grid-template-columns: 1fr; padding: 0 20px 20px; }
+  .detail-data-state { margin-right: 20px; margin-left: 20px; }
+  .decision-runner { padding: 16px 20px; }
+  .decision-runner dl { grid-template-columns: repeat(2, 1fr); }
   .backup-list li { align-items: stretch; flex-direction: column; }
 
   .status-card {

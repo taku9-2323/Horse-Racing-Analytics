@@ -676,7 +676,22 @@ class SqliteDatabase:
             races = connection.execute(
                 """SELECT race_date,racecourse,meeting_number,meeting_day,race_number,race_name,
                     start_time,surface,distance_m,condition_text,state,race_id,card_id,snapshot_id,
-                    judgement_id,error_code,updated_at
+                    judgement_id,error_code,updated_at,
+                    (SELECT rule_version_id FROM rule_judgement_runs
+                     WHERE id=meeting_week_races.judgement_id) AS rule_version_id,
+                    (SELECT judgement_as_of FROM rule_judgement_runs
+                     WHERE id=meeting_week_races.judgement_id) AS judgement_as_of,
+                    (SELECT frozen_at FROM rule_judgement_runs
+                     WHERE id=meeting_week_races.judgement_id) AS judgement_frozen_at,
+                    (SELECT observed_at FROM odds_snapshots
+                     WHERE id=meeting_week_races.snapshot_id) AS odds_observed_at,
+                    (SELECT start_utc FROM races WHERE id=meeting_week_races.race_id) AS start_utc,
+                    (SELECT COUNT(*) FROM runner_rule_judgements
+                     WHERE judgement_run_id=meeting_week_races.judgement_id
+                       AND judgement='注目') AS attention_horse_count,
+                    (SELECT COUNT(*) FROM runner_rule_judgements
+                     WHERE judgement_run_id=meeting_week_races.judgement_id
+                       AND judgement IN ('注目','見送り')) AS judged_runner_count
                 FROM meeting_week_races WHERE run_id=?
                 ORDER BY race_date,start_time,racecourse,race_number""",
                 (run["id"],),

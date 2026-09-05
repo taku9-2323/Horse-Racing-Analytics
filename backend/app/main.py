@@ -50,6 +50,7 @@ from app.meeting_week_acquisition import (
     JraMeetingWeekAcquirer, MeetingWeekAcquisitionService, MeetingWeekSummary,
     current_meeting_week, meeting_week_response,
 )
+from app.weekly_race_view import WeeklyRaceDecisionView, weekly_race_decision_view
 
 
 class ComponentHealth(BaseModel):
@@ -298,7 +299,7 @@ def create_app(
                 detail={"code": "meeting_week_run_in_progress", "message": "開催週の取得はすでに実行中です。"},
             ) from error
         start_weekly_task(lambda: meeting_week_service.run(run_id, week_start, week_end))
-        response = meeting_week_response(database, week_start.isoformat())
+        response = meeting_week_response(database, week_start.isoformat(), current_time())
         if response is None:
             raise HTTPException(status_code=500, detail="開始した開催週の取得を読み込めません。")
         return response
@@ -306,13 +307,33 @@ def create_app(
     @app.get("/api/acquisition/jra/meeting-weeks/current", response_model=MeetingWeekSummary)
     def get_current_meeting_week() -> MeetingWeekSummary:
         week_start, _ = current_meeting_week(current_time())
-        response = meeting_week_response(database, week_start.isoformat())
+        response = meeting_week_response(database, week_start.isoformat(), current_time())
         if response is None:
             raise HTTPException(
                 status_code=404,
                 detail={"code": "meeting_week_not_acquired", "message": "開催週の情報はまだ取得されていません。"},
             )
         return response
+
+    @app.get(
+        "/api/races/{race_id}/weekly-decision-view",
+        response_model=WeeklyRaceDecisionView,
+    )
+    def get_weekly_race_decision_view(
+        race_id: int, snapshot_id: int, judgement_id: int,
+    ) -> WeeklyRaceDecisionView:
+        try:
+            return weekly_race_decision_view(database, race_id, snapshot_id, judgement_id)
+        except LookupError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": str(error), "message": "指定したレース情報が見つかりません。"},
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(error), "message": "レース、オッズ、判定の組み合わせが一致しません。"},
+            ) from error
 
     @app.get("/api/races/{race_id}", response_model=RaceAnalysis)
     def get_race(race_id: int) -> RaceAnalysis:

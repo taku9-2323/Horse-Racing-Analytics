@@ -21,6 +21,7 @@ It does not place bets, scrape netkeiba, access authenticated JRA pages, crawl a
 - **Rule tag**: A descriptive condition recorded for later analysis without changing probability when no evidence-based adjustment magnitude exists.
 - **Expected value (EV)**: Predicted probability multiplied by decimal odds. A candidate threshold of 1.10 means an expected return of 110 yen per 100 yen staked before considering estimation error.
 - **Expected-value candidate**: A bet whose eligible, independent probability model reaches EV 1.10 or more at the prediction-freeze odds. Place candidates require an independent place-probability model and use the lower odds bound; the initial release normally produces no candidates.
+- **Attention race**: A race with at least one runner judged `注目` by the fixed rule run for one odds snapshot. Its attention level is the ratio of `注目` runners to runners eligible for a `注目` or `見送り` judgement; it is not expected value, return rate, purchase priority, or evidence of profit advantage.
 - **Frozen prediction**: A prediction run that cannot be edited. Corrections invalidate the old version and create a new version with a reason; post-deadline corrections are excluded from official evaluation.
 - **Real bet**: A bet actually purchased by the user.
 - **Hypothetical bet**: A simulated 100-yen bet automatically recorded for every candidate.

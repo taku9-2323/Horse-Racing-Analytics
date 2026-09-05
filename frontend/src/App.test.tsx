@@ -35,6 +35,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const openArea = (name: "データ取込" | "成績・検証") => {
+  fireEvent.click(screen.getByRole("button", { name }));
+};
+
 describe("system status", () => {
   it("shows the API and SQLite as running when the health endpoint is ready", async () => {
     vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn().mockResolvedValue(healthResponse("ok"))));
@@ -97,6 +101,7 @@ describe("race analysis", () => {
     })));
 
     render(<App />);
+    openArea("データ取込");
     fireEvent.change(screen.getByLabelText("JRAレースページURL"), { target: { value: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=card" } });
     fireEvent.click(screen.getByRole("button", { name: "取得して登録" }));
     await screen.findByText("検証済み / jra-race-entry/1");
@@ -140,6 +145,7 @@ describe("race analysis", () => {
     })));
 
     render(<App />);
+    openArea("データ取込");
     fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
 
     expect(await screen.findByRole("heading", { name: "札幌 11R" })).toBeTruthy();
@@ -168,6 +174,7 @@ describe("race analysis", () => {
     })));
 
     render(<App />);
+    openArea("データ取込");
     fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
 
     const alert = await screen.findByRole("alert");
@@ -201,6 +208,7 @@ describe("race analysis", () => {
     vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
+    openArea("データ取込");
 
     const file = new File(["racecourse\n東京"], "race.csv", { type: "text/csv" });
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [file] } });
@@ -229,6 +237,7 @@ describe("race analysis", () => {
       .mockResolvedValueOnce(errorResponse)));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
+    openArea("データ取込");
 
     fireEvent.change(screen.getByLabelText("CSVファイル"), {
       target: { files: [new File(["invalid"], "invalid.csv", { type: "text/csv" })] },
@@ -287,6 +296,7 @@ describe("prediction freezing", () => {
     vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
+    openArea("データ取込");
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
     await screen.findByRole("heading", { name: "東京 11R" });
@@ -345,6 +355,7 @@ describe("analysis tag management", () => {
       .mockResolvedValueOnce(jsonResponse([tag, replacement]))));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
+    openArea("成績・検証");
 
     fireEvent.click(screen.getByRole("button", { name: "分析タグを表示" }));
     expect(await screen.findByText("単勝オッズ水準 v1")).toBeTruthy();
