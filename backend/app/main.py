@@ -2,7 +2,8 @@ from collections.abc import Iterator
 from os import environ
 from pathlib import Path
 import sqlite3
-from threading import Lock
+from threading import Lock, Thread
+from time import monotonic, sleep
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Literal
 
@@ -45,6 +46,10 @@ from app.rule_judgements import (
     judgement_response, rule_version_response,
 )
 from app.market_rule_comparison import MarketRuleComparison, build_comparison
+from app.meeting_week_acquisition import (
+    JraMeetingWeekAcquirer, MeetingWeekAcquisitionService, MeetingWeekSummary,
+    current_meeting_week, meeting_week_response,
+)
 
 
 class ComponentHealth(BaseModel):
@@ -87,6 +92,7 @@ def create_app(
     frontend_dist_path: Path | None = None,
     now_provider: Callable[[], datetime] | None = None,
     jra_fetcher: Callable[[str], FetchResponse] | None = None,
+    weekly_task_starter: Callable[[Callable[[], None]], None] | None = None,
 ) -> FastAPI:
     resolved_database_path = database_path or default_database_path()
     database = SqliteDatabase(resolved_database_path)
@@ -108,12 +114,40 @@ def create_app(
         dependencies=[Depends(serialized_database_access)],
     )
     current_time = now_provider or (lambda: datetime.now(timezone.utc))
+    if database_initialization_error is None and database.has_running_meeting_week():
+        database.stop_stale_meeting_week_runs(
+            current_time().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
     data_maintenance = DataMaintenance(resolved_database_path, current_time)
-    race_card_acquirer = JraRaceCardAcquirer(
-        jra_fetcher or default_fetcher, resolved_database_path.parent / "jra-html-cache",
+    if jra_fetcher is not None:
+        fetcher = jra_fetcher
+    else:
+        jra_fetch_lock = Lock()
+        next_jra_request_at = 0.0
+
+        def fetcher(url: str) -> FetchResponse:
+            nonlocal next_jra_request_at
+            with jra_fetch_lock:
+                delay = next_jra_request_at - monotonic()
+                if delay > 0:
+                    sleep(delay)
+                response = default_fetcher(url)
+                next_jra_request_at = monotonic() + 1.0
+                return response
+    cache_directory = resolved_database_path.parent / "jra-html-cache"
+    race_card_acquirer = JraRaceCardAcquirer(fetcher, cache_directory)
+    odds_acquirer = JraOddsAcquirer(fetcher, cache_directory)
+    result_acquirer = JraResultAcquirer(fetcher)
+    meeting_week_acquirer = JraMeetingWeekAcquirer(fetcher, cache_directory)
+    meeting_week_service = MeetingWeekAcquisitionService(
+        database, meeting_week_acquirer, race_card_acquirer, odds_acquirer, current_time,
     )
-    odds_acquirer = JraOddsAcquirer(jra_fetcher or default_fetcher)
-    result_acquirer = JraResultAcquirer(jra_fetcher or default_fetcher)
+
+    def start_weekly_task(task: Callable[[], None]) -> None:
+        if weekly_task_starter is not None:
+            weekly_task_starter(task)
+            return
+        Thread(target=task, daemon=True, name="jra-meeting-week-acquisition").start()
 
     def acquired_card_response(card: sqlite3.Row, runners: list[sqlite3.Row]) -> AcquiredRaceCard:
         return AcquiredRaceCard(
@@ -243,6 +277,42 @@ def create_app(
             parser_version=str(row["parser_version"]), response_sha256=str(row["response_sha256"]),
             validation_status=str(row["validation_status"]), error_code=str(row["error_code"]),
         ) for row in database.list_acquisition_failures()]
+
+    @app.post(
+        "/api/acquisition/jra/meeting-weeks/current/runs",
+        response_model=MeetingWeekSummary,
+        status_code=202,
+    )
+    def start_current_meeting_week_run() -> MeetingWeekSummary:
+        week_start, week_end = current_meeting_week(current_time())
+        try:
+            run_id = database.start_meeting_week_run(
+                week_start.isoformat(), week_end.isoformat(),
+                current_time().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except RuntimeError as error:
+            if str(error) != "meeting_week_run_in_progress":
+                raise
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "meeting_week_run_in_progress", "message": "開催週の取得はすでに実行中です。"},
+            ) from error
+        start_weekly_task(lambda: meeting_week_service.run(run_id, week_start, week_end))
+        response = meeting_week_response(database, week_start.isoformat())
+        if response is None:
+            raise HTTPException(status_code=500, detail="開始した開催週の取得を読み込めません。")
+        return response
+
+    @app.get("/api/acquisition/jra/meeting-weeks/current", response_model=MeetingWeekSummary)
+    def get_current_meeting_week() -> MeetingWeekSummary:
+        week_start, _ = current_meeting_week(current_time())
+        response = meeting_week_response(database, week_start.isoformat())
+        if response is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "meeting_week_not_acquired", "message": "開催週の情報はまだ取得されていません。"},
+            )
+        return response
 
     @app.get("/api/races/{race_id}", response_model=RaceAnalysis)
     def get_race(race_id: int) -> RaceAnalysis:

@@ -59,7 +59,7 @@ export default function JraRaceAcquisitionPanel({ onRaceRegistered }: Props) {
   };
 
   return <section className="panel analysis-panel" aria-labelledby="jra-acquisition-heading">
-    <div className="panel-heading"><div><span className="section-number">02</span><h2 id="jra-acquisition-heading">JRAレース情報取得</h2></div><span className="local-badge">利用者操作のみ</span></div>
+    <div className="panel-heading"><div><span className="section-number">03</span><h2 id="jra-acquisition-heading">JRAレース情報取得</h2></div><span className="local-badge">利用者操作のみ</span></div>
     <div className="import-form">
       <label htmlFor="jra-race-card-url">JRAレースページURL</label>
       <input id="jra-race-card-url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessD.html?... または accessS.html?..." />

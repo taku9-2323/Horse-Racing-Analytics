@@ -218,6 +218,9 @@ def default_fetcher(url: str) -> FetchResponse:
         cname = parse_qs(parsed.query).get("CNAME", [""])[0]
         post_data = urlencode({"cname": cname}).encode("ascii")
         request_url = f"https://{ALLOWED_HOST}/JRADB/accessO.html"
+    elif parsed.path == "/JRADB/accessD.html" and parse_qs(parsed.query).get("CNAME") == ["pw01dli00/F3"]:
+        post_data = urlencode({"cname": "pw01dli00/F3"}).encode("ascii")
+        request_url = f"https://{ALLOWED_HOST}/JRADB/accessD.html"
     request = Request(request_url, data=post_data, headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain;q=0.9"})
     try:
         with urlopen(request, timeout=10) as response:  # noqa: S310 - caller only supplies validated fixed JRA URLs
@@ -348,16 +351,23 @@ class JraRaceCardAcquirer:
 
 
 class JraOddsAcquirer:
-    def __init__(self, fetcher: Callable[[str], FetchResponse]) -> None:
+    def __init__(self, fetcher: Callable[[str], FetchResponse], cache_directory: Path | None = None) -> None:
         self._fetcher = fetcher
+        self._cache_directory = cache_directory
         self._memory_cache: dict[str, tuple[datetime, bytes, str]] = {}
 
     def acquire(self, url: str, received_at: datetime) -> tuple[list[dict[str, float | int]], dict[str, Any]]:
         validate_odds_url(url)
+        if self._cache_directory is not None:
+            self._purge_expired_cache(received_at)
         cached = self._memory_cache.get(url)
         if cached is not None and received_at - cached[0] > timedelta(minutes=15):
             del self._memory_cache[url]
             cached = None
+        if cached is None and self._cache_directory is not None:
+            cached_body = self._load_recent_cache(url, received_at)
+            if cached_body is not None:
+                cached = (received_at, cached_body, "text/html")
         if cached is not None:
             body = cached[1]
             content_type = cached[2]
@@ -373,6 +383,14 @@ class JraOddsAcquirer:
             body = response.body
             content_type = response.headers.get("content-type", "")
             self._memory_cache[url] = (received_at, body, content_type)
+            if self._cache_directory is not None:
+                self._cache_directory.mkdir(parents=True, exist_ok=True)
+                url_digest = sha256(url.encode("utf-8")).hexdigest()
+                body_digest = sha256(body).hexdigest()
+                path = self._cache_directory / f"odds-{url_digest}-{body_digest}.html"
+                if not path.exists():
+                    path.write_bytes(body)
+                    os.utime(path, (received_at.timestamp(), received_at.timestamp()))
             response_received_at = received_at
         digest = sha256(body).hexdigest()
         try:
@@ -384,6 +402,27 @@ class JraOddsAcquirer:
             raise
         identity = parse_odds_source_identity(url)
         return odds, {"url": url, "source_race_id": identity["source_race_id"], "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "source_updated_at": source_updated_at, "parser_version": ODDS_PARSER_VERSION, "response_sha256": digest, "validation_status": "valid"}
+
+    def _purge_expired_cache(self, now: datetime) -> None:
+        if self._cache_directory is None or not self._cache_directory.is_dir():
+            return
+        cutoff = now.timestamp() - timedelta(days=7).total_seconds()
+        for path in self._cache_directory.glob("odds-*.html"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+
+    def _load_recent_cache(self, url: str, now: datetime) -> bytes | None:
+        if self._cache_directory is None or not self._cache_directory.is_dir():
+            return None
+        url_digest = sha256(url.encode("utf-8")).hexdigest()
+        minimum_mtime = now.timestamp() - timedelta(minutes=15).total_seconds()
+        candidates = sorted(
+            self._cache_directory.glob(f"odds-{url_digest}-*.html"),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+        if not candidates or candidates[0].stat().st_mtime < minimum_mtime:
+            return None
+        return candidates[0].read_bytes()
 
 
 class JraResultAcquirer:

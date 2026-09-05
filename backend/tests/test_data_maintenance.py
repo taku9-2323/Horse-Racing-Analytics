@@ -138,11 +138,12 @@ def test_json_and_csv_exports_include_user_data_and_audit_history(tmp_path: Path
     assert json_export.headers["content-type"] == "application/json"
     assert "attachment;" in json_export.headers["content-disposition"]
     payload = json_export.json()
-    assert payload["schema_version"] == "13"
+    assert payload["schema_version"] == "14"
     assert payload["exported_at"] == "2026-08-28T12:34:56Z"
     assert payload["tables"]["races"][0]["id"] == race["race_id"]
     assert payload["tables"]["runners"][0]["horse_name"] == "アカツキ"
     assert payload["tables"]["analysis_tag_audit_events"][0]["reason"] == "出力監査"
+    assert {"meeting_week_runs", "meeting_week_races", "meeting_week_observations"} <= set(payload["tables"])
 
     assert csv_export.status_code == 200
     assert csv_export.headers["content-type"] == "application/zip"

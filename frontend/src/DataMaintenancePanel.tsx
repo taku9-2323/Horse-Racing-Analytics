@@ -83,7 +83,7 @@ function DataMaintenancePanel() {
     <section className="panel maintenance-panel" aria-labelledby="data-maintenance-heading">
       <div className="panel-heading">
         <div>
-          <span className="section-number">05</span>
+          <span className="section-number">06</span>
           <h2 id="data-maintenance-heading">バックアップ・データ出力</h2>
         </div>
         <span className="local-badge">このPC内</span>

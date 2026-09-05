@@ -122,7 +122,7 @@ function EvaluationPanel() {
     <section className="panel evaluation-panel" aria-labelledby="evaluation-heading">
       <div className="panel-heading">
         <div>
-          <span className="section-number">04</span>
+          <span className="section-number">05</span>
           <h2 id="evaluation-heading">予測精度と収支</h2>
         </div>
         <span className="local-badge">確定済みデータ</span>

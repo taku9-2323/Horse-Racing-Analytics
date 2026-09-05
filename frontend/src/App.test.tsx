@@ -21,6 +21,15 @@ const emptyRaceListResponse = () => new Response(JSON.stringify([]), {
   status: 200, headers: { "Content-Type": "application/json" },
 });
 
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+const withMeetingWeekFallback = (fetcher: FetchLike) => vi.fn(
+  (input: string | URL | Request, init?: RequestInit) => String(input) === "/api/acquisition/jra/meeting-weeks/current"
+    ? Promise.resolve(new Response(JSON.stringify({ detail: { code: "meeting_week_not_acquired" } }), {
+      status: 404, headers: { "Content-Type": "application/json" },
+    }))
+    : fetcher(input, init),
+);
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -28,7 +37,7 @@ afterEach(() => {
 
 describe("system status", () => {
   it("shows the API and SQLite as running when the health endpoint is ready", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(healthResponse("ok")));
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn().mockResolvedValue(healthResponse("ok"))));
 
     render(<App />);
 
@@ -40,7 +49,7 @@ describe("system status", () => {
   });
 
   it("shows that only SQLite is stopped when the API returns degraded health", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(healthResponse("error", 503)));
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn().mockResolvedValue(healthResponse("error", 503))));
 
     render(<App />);
 
@@ -76,7 +85,7 @@ describe("race analysis", () => {
     const response = (value: object, status = 200) => new Response(JSON.stringify(value), {
       status, headers: { "Content-Type": "application/json" },
     });
-    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn((input: string | URL | Request) => {
       const url = String(input);
       if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
       if (url === "/api/races") return Promise.resolve(response([]));
@@ -85,7 +94,7 @@ describe("race analysis", () => {
       if (url === "/api/races/3") return Promise.resolve(response(analysis));
       if (url === "/api/races/3/odds-snapshots" || url === "/api/races/3/predictions") return Promise.resolve(response([]));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
-    }));
+    })));
 
     render(<App />);
     fireEvent.change(screen.getByLabelText("JRAレースページURL"), { target: { value: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=card" } });
@@ -117,7 +126,7 @@ describe("race analysis", () => {
     const response = (value: object) => new Response(JSON.stringify(value), {
       status: 200, headers: { "Content-Type": "application/json" },
     });
-    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn((input: string | URL | Request) => {
       const url = String(input);
       if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
       if (url === "/api/races") return Promise.resolve(response([
@@ -128,7 +137,7 @@ describe("race analysis", () => {
       if (url === "/api/races/3/odds-snapshots") return Promise.resolve(response([snapshot]));
       if (url === "/api/races/3/predictions") return Promise.resolve(response([]));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
-    }));
+    })));
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
@@ -150,13 +159,13 @@ describe("race analysis", () => {
     const response = (value: object, status = 200) => new Response(JSON.stringify(value), {
       status, headers: { "Content-Type": "application/json" },
     });
-    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn((input: string | URL | Request) => {
       const url = String(input);
       if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
       if (url === "/api/races") return Promise.resolve(response([{ race_id: 3, race }]));
       if (url === "/api/races/3") return Promise.resolve(response({}, 500));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
-    }));
+    })));
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "2026-08-29 札幌 11R" }));
@@ -189,7 +198,7 @@ describe("race analysis", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(analysis), {
         status: 201, headers: { "Content-Type": "application/json" },
       }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
 
@@ -214,10 +223,10 @@ describe("race analysis", () => {
         { row: 3, column: "age", code: "invalid_integer", description: "整数で指定してください。" },
       ],
     }}), { status: 422, headers: { "Content-Type": "application/json" } });
-    vi.stubGlobal("fetch", vi.fn()
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
       .mockResolvedValueOnce(emptyRaceListResponse())
-      .mockResolvedValueOnce(errorResponse));
+      .mockResolvedValueOnce(errorResponse)));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
 
@@ -275,7 +284,7 @@ describe("prediction freezing", () => {
       .mockResolvedValueOnce(jsonResponse(replacement, 201))
       .mockResolvedValueOnce(jsonResponse([historicalSnapshot, snapshot]))
       .mockResolvedValueOnce(jsonResponse([invalidated, replacement]));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
@@ -323,7 +332,7 @@ describe("analysis tag management", () => {
     const jsonResponse = (value: object, status = 200) => new Response(JSON.stringify(value), {
       status, headers: { "Content-Type": "application/json" },
     });
-    vi.stubGlobal("fetch", vi.fn()
+    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
       .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(jsonResponse([tag]))
@@ -333,7 +342,7 @@ describe("analysis tag management", () => {
         reason: "前向き検証", occurred_at: "2026-08-26T12:00:00Z",
       }]))
       .mockResolvedValueOnce(jsonResponse(replacement, 201))
-      .mockResolvedValueOnce(jsonResponse([tag, replacement])));
+      .mockResolvedValueOnce(jsonResponse([tag, replacement]))));
     render(<App />);
     await screen.findByRole("article", { name: "APIの状態" });
 

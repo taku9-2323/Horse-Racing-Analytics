@@ -469,6 +469,50 @@ class SqliteDatabase:
                 failed_conditions_json TEXT NOT NULL, missing_reasons_json TEXT NOT NULL,
                 PRIMARY KEY(judgement_run_id, horse_number))""")
             connection.execute("UPDATE application_metadata SET value = '13' WHERE key = 'schema_version'")
+            connection.execute("""CREATE TABLE IF NOT EXISTS meeting_week_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_start TEXT NOT NULL, week_end TEXT NOT NULL,
+                started_at TEXT NOT NULL, completed_at TEXT,
+                status TEXT NOT NULL CHECK (status IN ('running','completed','stopped')),
+                target_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                ready_count INTEGER NOT NULL DEFAULT 0,
+                waiting_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                stop_reason TEXT, last_target TEXT
+            )""")
+            connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_running_meeting_week
+                ON meeting_week_runs(status) WHERE status = 'running'""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS meeting_week_races (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES meeting_week_runs(id),
+                week_start TEXT NOT NULL,
+                race_date TEXT NOT NULL, racecourse TEXT NOT NULL,
+                meeting_number INTEGER NOT NULL, meeting_day INTEGER NOT NULL,
+                race_number INTEGER NOT NULL, race_name TEXT NOT NULL,
+                start_time TEXT NOT NULL, surface TEXT NOT NULL,
+                distance_m INTEGER NOT NULL, condition_text TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN (
+                    'schedule_only','entries_waiting','odds_waiting','judgement_waiting','ready','stopped'
+                )),
+                race_id INTEGER REFERENCES races(id),
+                card_id INTEGER REFERENCES acquired_race_cards(id),
+                snapshot_id INTEGER REFERENCES odds_snapshots(id),
+                judgement_id INTEGER REFERENCES rule_judgement_runs(id),
+                error_code TEXT, updated_at TEXT NOT NULL,
+                UNIQUE (run_id, race_date, racecourse, race_number)
+            )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS meeting_week_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES meeting_week_runs(id),
+                source_url TEXT NOT NULL, received_at TEXT NOT NULL,
+                parser_version TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                validation_status TEXT NOT NULL CHECK (validation_status IN ('valid','invalid')),
+                error_code TEXT,
+                UNIQUE (run_id, source_url, response_sha256)
+            )""")
+            connection.execute("UPDATE application_metadata SET value = '14' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -476,8 +520,168 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("13",):
+        if row != ("14",):
             raise RuntimeError("SQLite schema is not ready")
+
+    def start_meeting_week_run(self, week_start: str, week_end: str, started_at: str) -> int:
+        with sqlite3.connect(self._path) as connection:
+            try:
+                cursor = connection.execute(
+                    "INSERT INTO meeting_week_runs (week_start,week_end,started_at,status) VALUES (?,?,?,'running')",
+                    (week_start, week_end, started_at),
+                )
+            except sqlite3.IntegrityError as error:
+                raise RuntimeError("meeting_week_run_in_progress") from error
+            run_id = cursor.lastrowid
+            if run_id is None:
+                raise RuntimeError("Meeting week run could not be created")
+            return int(run_id)
+
+    def stop_stale_meeting_week_runs(self, stopped_at: str) -> None:
+        with sqlite3.connect(self._path) as connection:
+            run_ids = [int(row[0]) for row in connection.execute(
+                "SELECT id FROM meeting_week_runs WHERE status='running'",
+            ).fetchall()]
+        for run_id in run_ids:
+            self.finish_meeting_week_run(
+                run_id, "stopped", stopped_at, "アプリ再起動により前回の取得を終了しました。",
+            )
+
+    def has_running_meeting_week(self) -> bool:
+        with sqlite3.connect(self._path) as connection:
+            return connection.execute(
+                "SELECT 1 FROM meeting_week_runs WHERE status='running' LIMIT 1",
+            ).fetchone() is not None
+
+    def save_meeting_week_observation(self, run_id: int, observation: dict[str, Any]) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO meeting_week_observations
+                (run_id,source_url,received_at,parser_version,response_sha256,validation_status,error_code)
+                VALUES (?,?,?,?,?,?,?)""",
+                (run_id, observation["url"], observation["received_at"], observation["parser_version"],
+                 observation["response_sha256"], observation["validation_status"], observation.get("error_code")),
+            )
+
+    def upsert_meeting_week_race(
+        self, run_id: int, week_start: str, race: dict[str, Any], updated_at: str,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.execute(
+                """INSERT INTO meeting_week_races (
+                    run_id,week_start,race_date,racecourse,meeting_number,meeting_day,race_number,race_name,
+                    start_time,surface,distance_m,condition_text,source_url,state,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'entries_waiting', ?)
+                ON CONFLICT(run_id,race_date,racecourse,race_number) DO UPDATE SET
+                    meeting_number=excluded.meeting_number, meeting_day=excluded.meeting_day,
+                    race_name=excluded.race_name, start_time=excluded.start_time,
+                    surface=excluded.surface, distance_m=excluded.distance_m,
+                    condition_text=excluded.condition_text, source_url=excluded.source_url,
+                    updated_at=excluded.updated_at""",
+                (run_id, week_start, race["race_date"], race["racecourse"], race["meeting_number"], race["meeting_day"],
+                 race["race_number"], race["race_name"], race["start_time"], race["surface"], race["distance_m"],
+                 race["condition_text"], race["source_url"], updated_at),
+            )
+
+    def list_meeting_week_races(self, run_id: int) -> list[sqlite3.Row]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                "SELECT * FROM meeting_week_races WHERE run_id=? ORDER BY race_date,start_time,racecourse,race_number",
+                (run_id,),
+            ).fetchall()
+
+    def update_meeting_week_race(
+        self, run_id: int, race_date: str, racecourse: str, race_number: int,
+        *, state: str, updated_at: str, race_id: int | None = None, card_id: int | None = None,
+        snapshot_id: int | None = None, judgement_id: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.execute(
+                """UPDATE meeting_week_races SET state=?, updated_at=?,
+                    race_id=COALESCE(?,race_id), card_id=COALESCE(?,card_id),
+                    snapshot_id=COALESCE(?,snapshot_id), judgement_id=COALESCE(?,judgement_id),
+                    error_code=?
+                WHERE run_id=? AND race_date=? AND racecourse=? AND race_number=?""",
+                (state, updated_at, race_id, card_id, snapshot_id, judgement_id, error_code,
+                 run_id, race_date, racecourse, race_number),
+            )
+
+    def refresh_meeting_week_run_progress(
+        self, run_id: int, processed_count: int, last_target: str | None,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            run = connection.execute("SELECT id FROM meeting_week_runs WHERE id=?", (run_id,)).fetchone()
+            if run is None:
+                raise LookupError("meeting_week_run_not_found")
+            rows = connection.execute(
+                "SELECT state FROM meeting_week_races WHERE run_id=?", (run_id,),
+            ).fetchall()
+            target_count, ready_count, waiting_count, failed_count = (
+                self._summarize_meeting_week_states([str(row[0]) for row in rows])
+            )
+            connection.execute(
+                """UPDATE meeting_week_runs SET target_count=?,processed_count=?,ready_count=?,
+                    waiting_count=?,failed_count=?,last_target=? WHERE id=? AND status='running'""",
+                (target_count, min(processed_count, target_count), ready_count, waiting_count,
+                 failed_count, last_target, run_id),
+            )
+
+    def finish_meeting_week_run(
+        self, run_id: int, status: str, completed_at: str,
+        stop_reason: str | None = None, last_target: str | None = None,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            run = connection.execute(
+                "SELECT id,processed_count FROM meeting_week_runs WHERE id=?", (run_id,),
+            ).fetchone()
+            if run is None:
+                raise LookupError("meeting_week_run_not_found")
+            rows = connection.execute(
+                "SELECT state FROM meeting_week_races WHERE run_id=?", (run_id,),
+            ).fetchall()
+            target_count, ready_count, waiting_count, row_failure_count = (
+                self._summarize_meeting_week_states([str(row[0]) for row in rows])
+            )
+            if status == "stopped" and row_failure_count == 0:
+                target_count += 1
+            failed_count = max(1, row_failure_count) if status == "stopped" else row_failure_count
+            processed_count = len(rows) if status == "completed" else min(int(run[1]), target_count)
+            connection.execute(
+                """UPDATE meeting_week_runs SET completed_at=?,status=?,target_count=?,processed_count=?,
+                    ready_count=?,waiting_count=?,failed_count=?,stop_reason=?,last_target=? WHERE id=?""",
+                (completed_at, status, target_count, processed_count, ready_count,
+                waiting_count, failed_count, stop_reason, last_target, run_id),
+            )
+
+    @staticmethod
+    def _summarize_meeting_week_states(states: Sequence[str]) -> tuple[int, int, int, int]:
+        waiting_states = {"schedule_only", "entries_waiting", "odds_waiting", "judgement_waiting"}
+        return (
+            len(states),
+            sum(1 for state in states if state == "ready"),
+            sum(1 for state in states if state in waiting_states),
+            sum(1 for state in states if state == "stopped"),
+        )
+
+    def get_meeting_week(self, week_start: str) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            run = connection.execute(
+                "SELECT * FROM meeting_week_runs WHERE week_start=? ORDER BY id DESC LIMIT 1", (week_start,),
+            ).fetchone()
+            if run is None:
+                return None
+            races = connection.execute(
+                """SELECT race_date,racecourse,meeting_number,meeting_day,race_number,race_name,
+                    start_time,surface,distance_m,condition_text,state,race_id,card_id,snapshot_id,
+                    judgement_id,error_code,updated_at
+                FROM meeting_week_races WHERE run_id=?
+                ORDER BY race_date,start_time,racecourse,race_number""",
+                (run["id"],),
+            ).fetchall()
+            return run, races
 
     def list_rule_versions(self) -> list[sqlite3.Row]:
         with sqlite3.connect(self._path) as connection:
@@ -526,6 +730,18 @@ class SqliteDatabase:
             if run is None: return None
             rows = connection.execute("SELECT * FROM runner_rule_judgements WHERE judgement_run_id=? ORDER BY horse_number", (run_id,)).fetchall()
             return run, rows
+
+    def find_active_rule_judgement(
+        self, race_id: int, snapshot_id: int, rule_version_id: int,
+    ) -> int | None:
+        with sqlite3.connect(self._path) as connection:
+            row = connection.execute(
+                """SELECT id FROM rule_judgement_runs
+                WHERE race_id=? AND input_snapshot_id=? AND rule_version_id=? AND status='active'
+                ORDER BY id DESC LIMIT 1""",
+                (race_id, snapshot_id, rule_version_id),
+            ).fetchone()
+            return None if row is None else int(row[0])
 
     def list_rule_judgements(self, race_id: int) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
         with sqlite3.connect(self._path) as connection:
@@ -607,6 +823,26 @@ class SqliteDatabase:
                  observation["source_updated_at"], observation["parser_version"], observation["response_sha256"], observation["validation_status"]),
             )
             return int(race_id), int(snapshot_id)
+
+    def find_jra_odds_snapshot(
+        self, card_id: int, source_url: str, response_sha256: str,
+    ) -> tuple[int, int] | None:
+        with sqlite3.connect(self._path) as connection:
+            row = connection.execute(
+                """SELECT registrations.race_id, observations.snapshot_id
+                FROM jra_race_registrations AS registrations
+                JOIN jra_odds_observations AS observations
+                  ON observations.snapshot_id IN (
+                    SELECT id FROM odds_snapshots WHERE race_id=registrations.race_id
+                  )
+                WHERE registrations.card_id=? AND observations.source_url=?
+                  AND observations.response_sha256=?
+                ORDER BY observations.snapshot_id DESC LIMIT 1""",
+                (card_id, source_url, response_sha256),
+            ).fetchone()
+            if row is None:
+                return None
+            return int(row[0]), int(row[1])
 
     def save_acquired_race_card(
         self, race: dict[str, Any], runners: Sequence[dict[str, Any]], observation: dict[str, Any],

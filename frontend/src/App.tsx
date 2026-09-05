@@ -4,6 +4,7 @@ import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
 import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
+import MeetingWeekAcquisitionPanel from "./MeetingWeekAcquisitionPanel";
 import EvaluationPanel from "./EvaluationPanel";
 import MarketAttentionPanel from "./MarketAttentionPanel";
 import RuleJudgementPanel from "./RuleJudgementPanel";
@@ -221,12 +222,14 @@ function App() {
         )}
       </section>
 
+      <MeetingWeekAcquisitionPanel />
+
       <JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
 
       <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
         <div className="panel-heading">
           <div>
-            <span className="section-number">03</span>
+            <span className="section-number">04</span>
             <h2 id="race-analysis-heading">1レース市場分析</h2>
           </div>
           <span className="local-badge">登録済み / CSV</span>
@@ -358,8 +361,8 @@ function App() {
       <DataMaintenancePanel />
 
       <footer>
-        <span>個人運用MVP / チケット17</span>
-        <span>同じ時点の市場順位と固定ルール判定を一画面で比較</span>
+          <span>個人運用MVP / チケット18</span>
+          <span>開催週を一度の操作で取得し、公開段階と進捗を保存</span>
       </footer>
     </main>
   );
