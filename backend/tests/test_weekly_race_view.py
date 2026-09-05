@@ -121,3 +121,75 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
         "missing_reasons": [],
     }
     assert detail["disclaimer"] == "注目段階はルール該当率です。期待値、回収率、購入推奨、利益優位性を示しません。"
+
+
+def test_failed_refresh_keeps_races_from_the_last_successful_run_visible(tmp_path: Path) -> None:
+    database_path = tmp_path / "weekly-failed-refresh.sqlite3"
+    app = create_app(
+        database_path,
+        now_provider=lambda: datetime(2026, 9, 5, 5, 5, tzinfo=timezone.utc),
+    )
+    with TestClient(app) as client:
+        race = client.post(
+            "/api/races/import", content=current_week_csv(),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()
+        snapshot = client.post(f"/api/races/{race['race_id']}/odds-snapshots", json={
+            "observed_at": "2026-09-05T05:00:00Z", "source": "test",
+            "runners": [{
+                "horse_number": runner["horse_number"], "win_odds": runner["win_odds"],
+                "place_odds_min": runner["place_odds_min"],
+                "place_odds_max": runner["place_odds_max"],
+            } for runner in race["runners"]],
+        }).json()
+        rule = client.get("/api/rule-versions").json()[-1]
+        judgement = client.post(f"/api/races/{race['race_id']}/rule-judgements/freeze", json={
+            "snapshot_id": snapshot["id"], "rule_version_id": rule["id"],
+            "judgement_as_of": "2026-09-05T05:00:00Z",
+        }).json()
+        with sqlite3.connect(database_path) as connection:
+            old_run_id = connection.execute(
+                """INSERT INTO meeting_week_runs
+                (week_start,week_end,started_at,completed_at,status,target_count,processed_count,
+                 ready_count,waiting_count,failed_count)
+                VALUES ('2026-08-31','2026-09-06','2026-09-05T04:00:00Z','2026-09-05T04:01:00Z',
+                        'completed',1,1,0,1,0)""",
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO meeting_week_races
+                (run_id,week_start,race_date,racecourse,meeting_number,meeting_day,race_number,
+                 race_name,start_time,surface,distance_m,condition_text,source_url,state,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'entries_waiting',?)""",
+                (old_run_id, "2026-08-31", "2026-09-06", "中山", 4, 2, 12, "古い開催予定",
+                 "16:30", "芝", 2000, "3歳以上", "https://www.jra.go.jp/old",
+                 "2026-09-05T04:01:00Z"),
+            )
+        seed_ready_week(database_path, race["race_id"], snapshot["id"], judgement["id"])
+        with sqlite3.connect(database_path) as connection:
+            stopped_run_id = connection.execute(
+                """INSERT INTO meeting_week_runs
+                (week_start,week_end,started_at,completed_at,status,target_count,processed_count,
+                 ready_count,waiting_count,failed_count,stop_reason)
+                VALUES ('2026-08-31','2026-09-06','2026-09-05T05:10:00Z','2026-09-05T05:11:00Z',
+                        'stopped',1,0,0,0,1,'JRAからの取得を停止しました。')""",
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO meeting_week_races
+                (run_id,week_start,race_date,racecourse,meeting_number,meeting_day,race_number,
+                 race_name,start_time,surface,distance_m,condition_text,source_url,state,error_code,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'stopped','network_error',?)""",
+                (stopped_run_id, "2026-08-31", "2026-09-05", "東京", 4, 1, 11, "架空記念",
+                 "15:40", "芝", 2000, "3歳以上", "https://www.jra.go.jp/program",
+                 "2026-09-05T05:11:00Z"),
+            )
+
+        response = client.get("/api/acquisition/jra/meeting-weeks/current")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stopped"
+    assert payload["failed_count"] == 1
+    assert [(item["racecourse"], item["race_number"]) for item in payload["races"]] == [("東京", 11)]
+    assert payload["races"][0]["display_state"] == "acquisition_failed"
+    assert payload["races"][0]["judgement_id"] == judgement["id"]
+    assert payload["races"][0]["attention_horse_count"] == 2

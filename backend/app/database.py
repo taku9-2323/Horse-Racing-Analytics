@@ -665,7 +665,7 @@ class SqliteDatabase:
             sum(1 for state in states if state == "stopped"),
         )
 
-    def get_meeting_week(self, week_start: str) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+    def get_meeting_week(self, week_start: str) -> tuple[sqlite3.Row, list[dict[str, Any]]] | None:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             run = connection.execute(
@@ -673,8 +673,9 @@ class SqliteDatabase:
             ).fetchone()
             if run is None:
                 return None
-            races = connection.execute(
-                """SELECT race_date,racecourse,meeting_number,meeting_day,race_number,race_name,
+            def races_for_run(run_id: int) -> list[dict[str, Any]]:
+                rows = connection.execute(
+                    """SELECT race_date,racecourse,meeting_number,meeting_day,race_number,race_name,
                     start_time,surface,distance_m,condition_text,state,race_id,card_id,snapshot_id,
                     judgement_id,error_code,updated_at,
                     (SELECT rule_version_id FROM rule_judgement_runs
@@ -692,10 +693,42 @@ class SqliteDatabase:
                     (SELECT COUNT(*) FROM runner_rule_judgements
                      WHERE judgement_run_id=meeting_week_races.judgement_id
                        AND judgement IN ('注目','見送り')) AS judged_runner_count
-                FROM meeting_week_races WHERE run_id=?
+                FROM meeting_week_races WHERE meeting_week_races.run_id=?
                 ORDER BY race_date,start_time,racecourse,race_number""",
-                (run["id"],),
-            ).fetchall()
+                    (run_id,),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+            races = races_for_run(int(run["id"]))
+            if str(run["status"]) != "completed":
+                completed = connection.execute(
+                    """SELECT id FROM meeting_week_runs
+                    WHERE week_start=? AND status='completed' AND id<?
+                    ORDER BY id DESC LIMIT 1""",
+                    (week_start, run["id"]),
+                ).fetchone()
+                if completed is not None:
+                    def race_key(row: dict[str, Any]) -> tuple[str, str, int]:
+                        return str(row["race_date"]), str(row["racecourse"]), int(row["race_number"])
+
+                    merged = {race_key(row): row for row in races_for_run(int(completed["id"]))}
+                    for current in races:
+                        key = race_key(current)
+                        previous = merged.get(key)
+                        if previous is not None and current["judgement_id"] is None:
+                            for field in (
+                                "race_id", "snapshot_id", "judgement_id", "rule_version_id",
+                                "judgement_as_of", "judgement_frozen_at", "odds_observed_at",
+                                "start_utc", "attention_horse_count", "judged_runner_count",
+                            ):
+                                current[field] = previous[field]
+                        merged[key] = current
+                    races = sorted(
+                        merged.values(),
+                        key=lambda row: (
+                            row["race_date"], row["start_time"], row["racecourse"], row["race_number"],
+                        ),
+                    )
             return run, races
 
     def list_rule_versions(self) -> list[sqlite3.Row]:
