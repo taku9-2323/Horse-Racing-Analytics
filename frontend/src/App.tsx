@@ -181,7 +181,7 @@ function App() {
           aria-current={activeArea === area ? "page" : undefined} onClick={() => setActiveArea(area)}>{label}</button>)}
       </nav>
 
-      <section className="panel" aria-labelledby="system-status-heading">
+      {activeArea === "settings" && <section className="panel" aria-labelledby="system-status-heading">
         <div className="panel-heading">
           <div>
             <span className="section-number">01</span>
@@ -229,7 +229,7 @@ function App() {
             </article>
           </div>
         )}
-      </section>
+      </section>}
 
       {activeArea === "weekly" && <WeeklyRaceWorkspace onNavigate={setActiveArea} />}
 

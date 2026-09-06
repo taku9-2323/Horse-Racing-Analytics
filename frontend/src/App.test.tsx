@@ -35,16 +35,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const openArea = (name: "データ取込" | "成績・検証") => {
+const openArea = (name: "データ取込" | "成績・検証" | "設定・バックアップ") => {
   fireEvent.click(screen.getByRole("button", { name }));
 };
 
 describe("system status", () => {
-  it("shows the API and SQLite as running when the health endpoint is ready", async () => {
+  it("keeps health details out of the race workspace and shows them under settings", async () => {
     vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn().mockResolvedValue(healthResponse("ok"))));
 
     render(<App />);
 
+    expect(screen.queryByRole("heading", { name: "システム状態" })).toBeNull();
+    openArea("設定・バックアップ");
     const apiCard = await screen.findByRole("article", { name: "APIの状態" });
     const databaseCard = screen.getByRole("article", { name: "データベースの状態" });
     expect(within(apiCard).getByText("稼働中")).toBeTruthy();
@@ -57,6 +59,7 @@ describe("system status", () => {
 
     render(<App />);
 
+    openArea("設定・バックアップ");
     const apiCard = await screen.findByRole("article", { name: "APIの状態" });
     const databaseCard = screen.getByRole("article", { name: "データベースの状態" });
     expect(within(apiCard).getByText("稼働中")).toBeTruthy();
@@ -207,8 +210,8 @@ describe("race analysis", () => {
       }));
     vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
-    await screen.findByRole("article", { name: "APIの状態" });
     openArea("データ取込");
+    await screen.findByText("登録済みレースはありません。JRAレース情報とオッズを登録するか、CSVを取り込んでください。");
 
     const file = new File(["racecourse\n東京"], "race.csv", { type: "text/csv" });
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [file] } });
@@ -231,13 +234,14 @@ describe("race analysis", () => {
         { row: 3, column: "age", code: "invalid_integer", description: "整数で指定してください。" },
       ],
     }}), { status: 422, headers: { "Content-Type": "application/json" } });
-    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn()
+    const fetchMock = vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
       .mockResolvedValueOnce(emptyRaceListResponse())
-      .mockResolvedValueOnce(errorResponse)));
+      .mockResolvedValueOnce(errorResponse);
+    vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
-    await screen.findByRole("article", { name: "APIの状態" });
     openArea("データ取込");
+    await screen.findByText("登録済みレースはありません。JRAレース情報とオッズを登録するか、CSVを取り込んでください。");
 
     fireEvent.change(screen.getByLabelText("CSVファイル"), {
       target: { files: [new File(["invalid"], "invalid.csv", { type: "text/csv" })] },
@@ -295,8 +299,8 @@ describe("prediction freezing", () => {
       .mockResolvedValueOnce(jsonResponse([invalidated, replacement]));
     vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
-    await screen.findByRole("article", { name: "APIの状態" });
     openArea("データ取込");
+    await screen.findByText("登録済みレースはありません。JRAレース情報とオッズを登録するか、CSVを取り込んでください。");
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
     await screen.findByRole("heading", { name: "東京 11R" });
@@ -342,7 +346,7 @@ describe("analysis tag management", () => {
     const jsonResponse = (value: object, status = 200) => new Response(JSON.stringify(value), {
       status, headers: { "Content-Type": "application/json" },
     });
-    vi.stubGlobal("fetch", withMeetingWeekFallback(vi.fn()
+    const fetchMock = vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
       .mockResolvedValueOnce(emptyRaceListResponse())
       .mockResolvedValueOnce(jsonResponse([tag]))
@@ -352,10 +356,11 @@ describe("analysis tag management", () => {
         reason: "前向き検証", occurred_at: "2026-08-26T12:00:00Z",
       }]))
       .mockResolvedValueOnce(jsonResponse(replacement, 201))
-      .mockResolvedValueOnce(jsonResponse([tag, replacement]))));
+      .mockResolvedValueOnce(jsonResponse([tag, replacement]));
+    vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
-    await screen.findByRole("article", { name: "APIの状態" });
     openArea("成績・検証");
+    expect(screen.getByRole("heading", { name: "予測精度と収支" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "分析タグを表示" }));
     expect(await screen.findByText("単勝オッズ水準 v1")).toBeTruthy();
