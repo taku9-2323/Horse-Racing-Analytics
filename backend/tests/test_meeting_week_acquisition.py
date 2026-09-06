@@ -381,6 +381,44 @@ def test_week_run_registers_available_card_odds_and_fixed_rule_judgement(tmp_pat
     assert fetcher.urls.index(CARD_URL) < fetcher.urls.index(ODDS_URL)
 
 
+def test_week_run_treats_timestamp_free_post_start_odds_as_final(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    fetcher = MappingFetcher({
+        INDEX_URL: page(INDEX_URL, INDEX_HTML.replace(
+            f'<a href="/keiba/calendar2026/2026/9/0906.html">9月6日</a>'.encode(), b"",
+        )),
+        SATURDAY_URL: page(SATURDAY_URL, SATURDAY_PROGRAM),
+        SELECTION_URL: page(
+            SELECTION_URL, SELECTION_HTML, final_url="https://www.jra.go.jp/JRADB/accessD.html",
+        ),
+        CARD_URL: page(CARD_URL, CARD_HTML),
+        ODDS_URL: page(
+            ODDS_URL,
+            ODDS_HTML.replace("<p>オッズ更新時刻：9時05分</p>".encode(), b""),
+            final_url="https://www.jra.go.jp/JRADB/accessO.html",
+        ),
+    })
+    app = create_app(
+        tmp_path / "post-start-final-odds.sqlite3",
+        now_provider=lambda: datetime(2026, 9, 5, 1, 0, tzinfo=timezone.utc),
+        jra_fetcher=fetcher, weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+        races = client.get("/api/races").json()
+        snapshots = client.get(f"/api/races/{races[0]['race_id']}/odds-snapshots").json()
+        judgements = client.get(f"/api/races/{races[0]['race_id']}/rule-judgements").json()
+
+    assert current["ready_count"] == 1
+    assert current["races"][0]["state"] == "ready"
+    assert snapshots[-1]["observed_at"] == "2026-09-05T01:00:00Z"
+    assert judgements[-1]["official_pre_race_eligible"] is False
+    assert judgements[-1]["exclusion_reason"] == "発走後の判定です。"
+
+
 def test_week_run_recovers_the_published_odds_time_from_cached_html(tmp_path: Path) -> None:
     tasks, starter = deferred_tasks()
     clock = [datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)]

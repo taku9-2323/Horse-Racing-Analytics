@@ -799,6 +799,7 @@ class SqliteDatabase:
 
     def register_jra_race_with_odds(
         self, card_id: int, odds: Sequence[dict[str, Any]], observation: dict[str, Any],
+        observed_at: str | None,
     ) -> tuple[int, int]:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
@@ -871,7 +872,7 @@ class SqliteDatabase:
                 race_id = int(registered["race_id"])
             snapshot = connection.execute(
                 "INSERT INTO odds_snapshots (race_id,observed_at,received_at,source) VALUES (?,?,?,'jra_web')",
-                (race_id, observation["source_updated_at"], observation["received_at"]),
+                (race_id, observed_at, observation["received_at"]),
             )
             snapshot_id = snapshot.lastrowid
             if snapshot_id is None:
@@ -888,23 +889,29 @@ class SqliteDatabase:
             )
             return int(race_id), int(snapshot_id)
 
+    def get_acquired_race_card(self, card_id: int) -> sqlite3.Row | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(
+                "SELECT * FROM acquired_race_cards WHERE id=?", (card_id,),
+            ).fetchone()
+
     def find_jra_odds_snapshot(
         self, card_id: int, source_url: str, response_sha256: str,
-        parser_version: str, source_updated_at: str | None,
+        parser_version: str, source_updated_at: str | None, observed_at: str | None,
     ) -> tuple[int, int] | None:
         with sqlite3.connect(self._path) as connection:
             row = connection.execute(
                 """SELECT registrations.race_id, observations.snapshot_id
                 FROM jra_race_registrations AS registrations
                 JOIN jra_odds_observations AS observations
-                  ON observations.snapshot_id IN (
-                    SELECT id FROM odds_snapshots WHERE race_id=registrations.race_id
-                  )
+                JOIN odds_snapshots AS snapshots
+                  ON snapshots.id=observations.snapshot_id AND snapshots.race_id=registrations.race_id
                 WHERE registrations.card_id=? AND observations.source_url=?
                   AND observations.response_sha256=? AND observations.parser_version=?
-                  AND observations.source_updated_at IS ?
+                  AND observations.source_updated_at IS ? AND snapshots.observed_at IS ?
                 ORDER BY observations.snapshot_id DESC LIMIT 1""",
-                (card_id, source_url, response_sha256, parser_version, source_updated_at),
+                (card_id, source_url, response_sha256, parser_version, source_updated_at, observed_at),
             ).fetchone()
             if row is None:
                 return None

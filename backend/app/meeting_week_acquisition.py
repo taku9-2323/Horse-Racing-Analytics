@@ -15,7 +15,7 @@ from app.jra_acquisition import (
     ALLOWED_HOST, MAX_RESPONSE_BYTES, ROBOTS_URL, AcquisitionError, FetchResponse,
     JraOddsAcquirer, JraRaceCardAcquirer, SOURCE_RACE_ID_PATTERN,
     audited_error, decode_html, parse_odds_source_identity, parse_source_race_identity,
-    robots_allows,
+    resolve_odds_observed_at, robots_allows,
 )
 
 
@@ -581,20 +581,24 @@ class MeetingWeekAcquisitionService:
                         continue
                     current_target = odds_url
                     odds, odds_observation = self._odds.acquire(odds_url, self._now())
+                    observed_at = resolve_odds_observed_at(
+                        cast(str | None, odds_observation["source_updated_at"]),
+                        str(odds_observation["received_at"]), str(race["start_utc"]),
+                    )
                     existing_snapshot = self._database.find_jra_odds_snapshot(
                         card_id, str(odds_observation["url"]), str(odds_observation["response_sha256"]),
                         str(odds_observation["parser_version"]),
                         cast(str | None, odds_observation["source_updated_at"]),
+                        observed_at,
                     )
                     if existing_snapshot is None:
                         race_id, snapshot_id = self._database.register_jra_race_with_odds(
-                            card_id, odds, odds_observation,
+                            card_id, odds, odds_observation, observed_at,
                         )
                     else:
                         race_id, snapshot_id = existing_snapshot
                     state = "judgement_waiting"
                     judgement_id: int | None = None
-                    observed_at = odds_observation["source_updated_at"]
                     if observed_at is not None:
                         rule_rows = self._database.list_rule_versions()
                         rule_id = int(rule_rows[-1]["id"])

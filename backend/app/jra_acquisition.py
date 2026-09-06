@@ -136,6 +136,17 @@ class AcquisitionObservation(BaseModel):
     error_code: str | None
 
 
+def resolve_odds_observed_at(
+    source_updated_at: str | None, received_at: str, race_start_utc: str,
+) -> str | None:
+    """Use receipt time as the snapshot time only when timestamp-free odds are acquired post-start."""
+    if source_updated_at is not None:
+        return source_updated_at
+    received = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+    race_start = datetime.fromisoformat(race_start_utc.replace("Z", "+00:00"))
+    return received_at if received >= race_start else None
+
+
 @dataclass
 class Element:
     tag: str

@@ -97,6 +97,29 @@ def test_registers_a_jra_card_and_odds_as_one_analysis_race_atomically(tmp_path:
         assert connection.execute("SELECT COUNT(*) FROM jra_odds_observations").fetchone() == (1,)
 
 
+def test_direct_acquisition_treats_timestamp_free_post_start_odds_as_final(tmp_path: Path) -> None:
+    database_path = tmp_path / "post-start-final-odds.sqlite3"
+    app = create_app(
+        database_path, jra_fetcher=JraFetcher(),
+        now_provider=lambda: datetime(2026, 8, 30, 5, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        card = client.post("/api/acquisition/jra/race-card", json={"url": CARD_URL}).json()
+        response = client.post(
+            f"/api/acquisition/jra/race-cards/{card['card_id']}/odds",
+            json={"url": FICTIONAL_ODDS_URL},
+        )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["observed_at"] == "2026-08-30T05:00:00Z"
+    assert response.json()["source"]["source_updated_at"] is None
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT observed_at FROM odds_snapshots").fetchone() == (
+            "2026-08-30T05:00:00Z",
+        )
+
+
 def test_registers_shift_jis_odds_when_http_header_omits_charset(tmp_path: Path) -> None:
     current_odds_html = """<!doctype html><html><head><meta charset="Shift_JIS"></head><body>
     <h1>単勝・複勝オッズ（馬番順） 2026年8月30日（日曜）3回架空2日 7レース</h1>

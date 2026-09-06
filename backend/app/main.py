@@ -38,6 +38,7 @@ from app.jra_acquisition import (
     AcquiredOddsRunner, AcquiredOddsSnapshot, AcquiredRaceCard, AcquiredRaceSummary, AcquiredRunner, AcquisitionError,
     AcquisitionObservation, FetchResponse, JraOddsAcquirer, JraRaceCardAcquirer, JraResultAcquirer,
     OddsPageRequest, RaceCardRequest, ResultPageRequest, SourceObservation, default_fetcher,
+    resolve_odds_observed_at,
 )
 from app.evaluation import EvaluationFilters, EvaluationReport, build_evaluation_report
 from app.market_attention import MarketAttentionRanking, build_market_attention_ranking
@@ -249,7 +250,15 @@ def create_app(
     def acquire_jra_odds(card_id: int, request: OddsPageRequest) -> AcquiredOddsSnapshot:
         try:
             odds, observation = odds_acquirer.acquire(request.url, current_time())
-            race_id, snapshot_id = database.register_jra_race_with_odds(card_id, odds, observation)
+            card = database.get_acquired_race_card(card_id)
+            if card is None:
+                raise LookupError("race_card_not_found")
+            observed_at = resolve_odds_observed_at(
+                observation["source_updated_at"], observation["received_at"], str(card["start_utc"]),
+            )
+            race_id, snapshot_id = database.register_jra_race_with_odds(
+                card_id, odds, observation, observed_at,
+            )
         except AcquisitionError as error:
             if error.observation is not None:
                 database.save_acquisition_failure(error.observation)
@@ -261,7 +270,7 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail={"code": str(error), "message": "レースカードと全出走馬のオッズが一致しません。"}) from error
         return AcquiredOddsSnapshot(
-            race_id=race_id, snapshot_id=snapshot_id, observed_at=observation["source_updated_at"],
+            race_id=race_id, snapshot_id=snapshot_id, observed_at=observed_at,
             received_at=observation["received_at"],
             runners=[AcquiredOddsRunner(
                 horse_number=int(runner["horse_number"]), win_odds=float(runner["win_odds"]),
