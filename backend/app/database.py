@@ -818,39 +818,55 @@ class SqliteDatabase:
                 "SELECT race_id FROM jra_race_registrations WHERE card_id = ?", (card_id,),
             ).fetchone()
             if registered is None:
-                existing = connection.execute(
-                    "SELECT id FROM races WHERE organizer=? AND country=? AND racecourse=? AND race_date=? AND race_number=?",
-                    (card["organizer"], card["country"], card["racecourse"], card["race_date"], card["race_number"]),
+                prior_registration = connection.execute(
+                    """SELECT registrations.race_id
+                    FROM jra_race_registrations AS registrations
+                    JOIN acquired_race_cards AS cards ON cards.id = registrations.card_id
+                    WHERE cards.source_race_id = ?
+                    ORDER BY cards.version DESC LIMIT 1""",
+                    (card["source_race_id"],),
                 ).fetchone()
-                if existing is not None:
-                    raise RaceImportConflictError
-                cursor = connection.execute(
-                    """INSERT INTO races (organizer,country,racecourse,race_date,race_number,start_time,timezone,
-                    start_utc,surface,distance_m,going,field_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    tuple(card[key] for key in ("organizer","country","racecourse","race_date","race_number","start_time","timezone","start_utc","surface","distance_m","going","field_size")),
-                )
-                race_id = cursor.lastrowid
-                if race_id is None:
-                    raise RuntimeError("Race could not be saved")
-                odds_by_number = {int(row["horse_number"]): row for row in odds}
-                market_by_number = {
-                    int(row["horse_number"]): values
-                    for row, values in zip(
-                        odds,
-                        win_market_baseline([float(row["win_odds"]) for row in odds]),
-                        strict=True,
+                if prior_registration is not None:
+                    race_id = int(prior_registration["race_id"])
+                    connection.execute(
+                        "INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)",
+                        (card_id, race_id),
                     )
-                }
-                connection.executemany(
-                    """INSERT INTO runners (race_id,gate,horse_number,horse_name,age,sex,assigned_weight,status,
-                    win_odds,place_odds_min,place_odds_max,raw_inverse_win_odds,normalized_win_market_share)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    [(race_id, row["gate"], row["horse_number"], row["horse_name"], row["age"], row["sex"],
-                      row["assigned_weight"], row["status"], odds_by_number[int(row["horse_number"])]["win_odds"],
-                      odds_by_number[int(row["horse_number"])]["place_odds_min"], odds_by_number[int(row["horse_number"])]["place_odds_max"],
-                      *market_by_number[int(row["horse_number"])]) for row in card_runners],
-                )
-                connection.execute("INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)", (card_id, race_id))
+                else:
+                    existing = connection.execute(
+                        "SELECT id FROM races WHERE organizer=? AND country=? AND racecourse=? AND race_date=? AND race_number=?",
+                        (card["organizer"], card["country"], card["racecourse"], card["race_date"], card["race_number"]),
+                    ).fetchone()
+                    if existing is not None:
+                        raise RaceImportConflictError
+                    cursor = connection.execute(
+                        """INSERT INTO races (organizer,country,racecourse,race_date,race_number,start_time,timezone,
+                        start_utc,surface,distance_m,going,field_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        tuple(card[key] for key in ("organizer","country","racecourse","race_date","race_number","start_time","timezone","start_utc","surface","distance_m","going","field_size")),
+                    )
+                    inserted_race_id = cursor.lastrowid
+                    if inserted_race_id is None:
+                        raise RuntimeError("Race could not be saved")
+                    race_id = int(inserted_race_id)
+                    odds_by_number = {int(row["horse_number"]): row for row in odds}
+                    market_by_number = {
+                        int(row["horse_number"]): values
+                        for row, values in zip(
+                            odds,
+                            win_market_baseline([float(row["win_odds"]) for row in odds]),
+                            strict=True,
+                        )
+                    }
+                    connection.executemany(
+                        """INSERT INTO runners (race_id,gate,horse_number,horse_name,age,sex,assigned_weight,status,
+                        win_odds,place_odds_min,place_odds_max,raw_inverse_win_odds,normalized_win_market_share)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [(race_id, row["gate"], row["horse_number"], row["horse_name"], row["age"], row["sex"],
+                          row["assigned_weight"], row["status"], odds_by_number[int(row["horse_number"])]["win_odds"],
+                          odds_by_number[int(row["horse_number"])]["place_odds_min"], odds_by_number[int(row["horse_number"])]["place_odds_max"],
+                          *market_by_number[int(row["horse_number"])]) for row in card_runners],
+                    )
+                    connection.execute("INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)", (card_id, race_id))
             else:
                 race_id = int(registered["race_id"])
             snapshot = connection.execute(

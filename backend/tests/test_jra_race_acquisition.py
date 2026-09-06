@@ -102,6 +102,26 @@ def test_user_acquires_current_jra_card_without_declared_headcount(tmp_path: Pat
     assert response.json()["runners"][1]["sex"] == "\u30bb\u30f3"
 
 
+def test_user_acquires_a_complete_card_before_going_is_published(tmp_path: Path) -> None:
+    page_without_going = FIXTURE.replace(
+        b'<li class="turf"><span class="txt">\xe8\x89\xaf</span></li>', b"",
+    )
+    app = create_app(
+        tmp_path / "going-waiting.sqlite3",
+        now_provider=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc),
+        jra_fetcher=FakeFetcher(FetchResponse(
+            status=200, final_url=URL,
+            headers={"content-type": "text/html; charset=utf-8"}, body=page_without_going,
+        )),
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/acquisition/jra/race-card", json={"url": URL})
+
+    assert response.status_code == 201, response.text
+    assert response.json()["race"]["going"] == "未発表"
+
+
 def test_current_card_without_declared_headcount_requires_post_table_marker(tmp_path: Path) -> None:
     incomplete_page = (FIXTURE
         .replace(b'<span class="field_size">2\xe9\xa0\xad</span>', b"")

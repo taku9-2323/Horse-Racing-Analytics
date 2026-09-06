@@ -268,6 +268,8 @@ def extract_race_card_urls(body: bytes, content_type: str, base_url: str,
     for link in parser.links:
         candidate = unquote(urljoin(base_url, link))
         parsed = urlparse(candidate)
+        candidate = parsed._replace(fragment="").geturl()
+        parsed = urlparse(candidate)
         cname = parse_qs(parsed.query).get("CNAME", [])
         match = SOURCE_RACE_ID_PATTERN.fullmatch(cname[0]) if len(cname) == 1 else None
         if (parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST or parsed.path != "/JRADB/accessD.html"
@@ -508,24 +510,45 @@ class MeetingWeekAcquisitionService:
                 seeds = extract_race_card_urls(selection_body, selection_type, SELECTION_URL, week_start, week_end)
             except ResourceNotPublished:
                 seeds = []
-            for seed in seeds:
+            seed_queue = list(seeds)
+            queued_seeds = set(seeds)
+            expanded_meetings: set[tuple[str, str]] = set()
+            while seed_queue:
+                seed = seed_queue.pop(0)
+                queued_seeds.discard(seed)
                 current_target = seed
                 seed_identity = parse_source_race_identity(seed)
                 seed_key = (
                     str(seed_identity["race_date"]), str(seed_identity["racecourse"]),
                     int(seed_identity["race_number"]),
                 )
+                meeting_key = (seed_key[0], seed_key[1])
+                if meeting_key in expanded_meetings:
+                    continue
                 current_key = seed_key
                 try:
                     _, _, _, seed_body = self._race_cards.acquire(seed, self._now())
-                    for discovered_card_url in extract_race_card_urls(
+                    expanded_meetings.add(meeting_key)
+                    discovered_urls = extract_race_card_urls(
                         seed_body, "text/html", seed, week_start, week_end,
-                    ):
+                    )
+                    next_meeting_seeds: dict[tuple[str, str], tuple[int, str]] = {}
+                    for discovered_card_url in discovered_urls:
                         identity = parse_source_race_identity(discovered_card_url)
-                        card_urls[(
+                        discovered_key = (
                             str(identity["race_date"]), str(identity["racecourse"]),
                             int(identity["race_number"]),
-                        )] = discovered_card_url
+                        )
+                        card_urls[discovered_key] = discovered_card_url
+                        discovered_meeting = (discovered_key[0], discovered_key[1])
+                        current_candidate = next_meeting_seeds.get(discovered_meeting)
+                        candidate_priority = 0 if discovered_key[2] == 11 else 1
+                        if current_candidate is None or candidate_priority < current_candidate[0]:
+                            next_meeting_seeds[discovered_meeting] = (candidate_priority, discovered_card_url)
+                    for discovered_meeting, (_, next_seed) in next_meeting_seeds.items():
+                        if discovered_meeting not in expanded_meetings and next_seed not in queued_seeds:
+                            seed_queue.append(next_seed)
+                            queued_seeds.add(next_seed)
                 except (AcquisitionError, RaceImportConflictError, LookupError, ValueError) as error:
                     self._record_race_failure(run_id, seed_key, error)
                 finally:

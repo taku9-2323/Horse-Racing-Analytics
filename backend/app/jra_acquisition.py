@@ -591,7 +591,10 @@ def parse_race_card(
         declared_field_size = int(declared_field_match.group(1)) if declared_field_match else None
         header_element = require_element(header)
         going_node = header_element.find(class_name="turf") or header_element.find(class_name="durt")
-        going_text = required_text(going_node.find(class_name="txt") if going_node else None)
+        going_text = (
+            required_text(going_node.find(class_name="txt"))
+            if going_node is not None else "未発表"
+        )
         race_date = f"{int(date_match[0]):04d}-{int(date_match[1]):02d}-{int(date_match[2]):02d}"
         start_time = f"{int(start[0]):02d}:{int(start[1]):02d}"
         local_start = datetime.fromisoformat(f"{race_date}T{start_time}:00").replace(

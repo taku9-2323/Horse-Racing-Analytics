@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import sqlite3
@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.jra_acquisition import FetchResponse
 from app.main import create_app
+from app.meeting_week_acquisition import extract_race_card_urls
 
 
 INDEX_URL = "https://www.jra.go.jp/keiba/calendar2026/index.html"
@@ -19,7 +20,21 @@ CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde01062026040101
 ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html?CNAME=pw151ouS306202604010120260905Z/DD"
 SECOND_CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0106202604010220260905/43"
 SECOND_ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html?CNAME=pw151ouS306202604010220260905Z/DE"
+SAPPORO_SEED_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0101202602051120260905/AA"
+SAPPORO_CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0101202602050220260905/BB"
 ROBOTS_URL = "https://www.jra.go.jp/robots.txt"
+
+
+def test_race_card_links_are_canonicalized_without_page_fragments() -> None:
+    html = (
+        f'<a href="{CARD_URL.removeprefix("https://www.jra.go.jp")}">race</a>'
+        f'<a href="{CARD_URL.removeprefix("https://www.jra.go.jp")}#contents">contents</a>'
+        f'<a href="{CARD_URL.removeprefix("https://www.jra.go.jp")}#same_unit">same</a>'
+    ).encode()
+
+    assert extract_race_card_urls(
+        html, "text/html", CARD_URL, date(2026, 8, 31), date(2026, 9, 6),
+    ) == [CARD_URL]
 
 INDEX_HTML = f"""<!doctype html><html><body>
 <a href="/keiba/calendar2026/2026/9/0905.html">9月5日</a>
@@ -96,6 +111,19 @@ SECOND_CARD_HTML = (BASE_CARD
         '<p>オッズ更新時刻：9時05分</p></body>'
     ).encode()))
 SECOND_ODDS_HTML = ODDS_HTML.replace("1レース".encode(), "2レース".encode())
+SAPPORO_SEED_HTML = (BASE_CARD
+    .replace("2026年8月30日（日曜） 3回架空2日".encode(), "2026年9月5日（土曜） 2回札幌5日".encode())
+    .replace("7レース".encode(), "11レース".encode())
+    .replace("13時25分".encode(), "15時20分".encode())
+    .replace("架空記念".encode(), "札幌メイン".encode())
+    .replace(b"</body>", (
+        f'<a href="{SAPPORO_CARD_URL.removeprefix("https://www.jra.go.jp")}">2レース</a></body>'
+    ).encode()))
+SAPPORO_CARD_HTML = (BASE_CARD
+    .replace("2026年8月30日（日曜） 3回架空2日".encode(), "2026年9月5日（土曜） 2回札幌5日".encode())
+    .replace("7レース".encode(), "2レース".encode())
+    .replace("13時25分".encode(), "10時20分".encode())
+    .replace("架空記念".encode(), "2歳未勝利".encode()))
 
 
 class MappingFetcher:
@@ -349,6 +377,46 @@ def test_week_run_registers_available_card_odds_and_fixed_rule_judgement(tmp_pat
     assert fetcher.urls.index(CARD_URL) < fetcher.urls.index(ODDS_URL)
 
 
+def test_week_run_reuses_the_registered_race_for_a_new_card_version(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    clock = [datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)]
+    fetcher = MappingFetcher({
+        INDEX_URL: page(INDEX_URL, INDEX_HTML.replace(
+            f'<a href="/keiba/calendar2026/2026/9/0906.html">9月6日</a>'.encode(), b"",
+        )),
+        SATURDAY_URL: page(SATURDAY_URL, SATURDAY_PROGRAM),
+        SELECTION_URL: page(
+            SELECTION_URL, SELECTION_HTML, final_url="https://www.jra.go.jp/JRADB/accessD.html",
+        ),
+        CARD_URL: page(CARD_URL, CARD_HTML),
+        ODDS_URL: page(ODDS_URL, ODDS_HTML, final_url="https://www.jra.go.jp/JRADB/accessO.html"),
+    })
+    app = create_app(
+        tmp_path / "new-card-version.sqlite3", now_provider=lambda: clock[0],
+        jra_fetcher=fetcher, weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        fetcher.pages[CARD_URL] = page(
+            CARD_URL, CARD_HTML.replace(b"</body>", b"<p>refreshed</p></body>"),
+        )
+        clock[0] = datetime(2026, 9, 5, 0, 26, tzinfo=timezone.utc)
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+        cards = client.get("/api/acquisition/jra/race-cards").json()
+
+    assert current["status"] == "completed"
+    assert current["ready_count"] == 1
+    assert current["failed_count"] == 0
+    assert [(card["version"], card["status"]) for card in cards] == [
+        (1, "superseded"),
+        (2, "active"),
+    ]
+
+
 def test_week_run_keeps_processing_after_one_race_card_fails(tmp_path: Path) -> None:
     tasks, starter = deferred_tasks()
     selection = f"""<html><body>
@@ -387,6 +455,51 @@ def test_week_run_keeps_processing_after_one_race_card_fails(tmp_path: Path) -> 
     assert [(race["race_number"], race["state"], race["error_code"]) for race in current["races"]] == [
         (1, "stopped", "race_card_validation_failed"),
         (2, "ready", None),
+    ]
+
+
+def test_week_run_expands_a_new_racecourse_seed_to_find_all_published_cards(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    program = """<html><body><h1>2026年9月5日（土曜） 競馬番組</h1>
+      <h2>4回中山1日</h2><table>
+        <tr><td>1レース</td><td>2歳未勝利 1,200（ダ）</td><td>9時50分</td></tr>
+      </table>
+      <h2>2回札幌5日</h2><table>
+        <tr><td>2レース</td><td>2歳未勝利 1,800（芝）</td><td>10時20分</td></tr>
+      </table></body></html>""".encode()
+    first_seed = CARD_HTML.replace(
+        b"</body>",
+        f'<a href="{SAPPORO_SEED_URL.removeprefix("https://www.jra.go.jp")}">札幌</a></body>'.encode(),
+    )
+    app = create_app(
+        tmp_path / "nested-racecourse-seed.sqlite3",
+        now_provider=lambda: datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc),
+        jra_fetcher=MappingFetcher({
+            INDEX_URL: page(INDEX_URL, INDEX_HTML.replace(
+                f'<a href="/keiba/calendar2026/2026/9/0906.html">9月6日</a>'.encode(), b"",
+            )),
+            SATURDAY_URL: page(SATURDAY_URL, program),
+            SELECTION_URL: page(
+                SELECTION_URL, SELECTION_HTML,
+                final_url="https://www.jra.go.jp/JRADB/accessD.html",
+            ),
+            CARD_URL: page(CARD_URL, first_seed),
+            ODDS_URL: page(ODDS_URL, ODDS_HTML, final_url="https://www.jra.go.jp/JRADB/accessO.html"),
+            SAPPORO_SEED_URL: page(SAPPORO_SEED_URL, SAPPORO_SEED_HTML),
+            SAPPORO_CARD_URL: page(SAPPORO_CARD_URL, SAPPORO_CARD_HTML),
+        }),
+        weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+
+    assert current["status"] == "completed"
+    assert [(race["racecourse"], race["race_number"], race["state"]) for race in current["races"]] == [
+        ("中山", 1, "ready"),
+        ("札幌", 2, "odds_waiting"),
     ]
 
 
