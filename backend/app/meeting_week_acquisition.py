@@ -455,6 +455,16 @@ class MeetingWeekAcquisitionService:
         self._odds = odds
         self._now = now_provider
 
+    def _record_race_failure(
+        self, run_id: int, key: tuple[str, str, int], error: Exception,
+    ) -> None:
+        if isinstance(error, AcquisitionError) and error.observation is not None:
+            self._database.save_acquisition_failure(error.observation)
+        self._database.update_meeting_week_race(
+            run_id, *key, state="stopped", updated_at=utc_iso(self._now()),
+            error_code=error.code if isinstance(error, AcquisitionError) else type(error).__name__,
+        )
+
     def run(self, run_id: int, week_start: date, week_end: date) -> None:
         current_target: str | None = None
         current_key: tuple[str, str, int] | None = None
@@ -500,15 +510,29 @@ class MeetingWeekAcquisitionService:
                 seeds = []
             for seed in seeds:
                 current_target = seed
-                _, _, _, seed_body = self._race_cards.acquire(seed, self._now())
-                for discovered_card_url in extract_race_card_urls(
-                    seed_body, "text/html", seed, week_start, week_end,
-                ):
-                    identity = parse_source_race_identity(discovered_card_url)
-                    card_urls[(
-                        str(identity["race_date"]), str(identity["racecourse"]),
-                        int(identity["race_number"]),
-                    )] = discovered_card_url
+                seed_identity = parse_source_race_identity(seed)
+                seed_key = (
+                    str(seed_identity["race_date"]), str(seed_identity["racecourse"]),
+                    int(seed_identity["race_number"]),
+                )
+                current_key = seed_key
+                try:
+                    _, _, _, seed_body = self._race_cards.acquire(seed, self._now())
+                    for discovered_card_url in extract_race_card_urls(
+                        seed_body, "text/html", seed, week_start, week_end,
+                    ):
+                        identity = parse_source_race_identity(discovered_card_url)
+                        card_urls[(
+                            str(identity["race_date"]), str(identity["racecourse"]),
+                            int(identity["race_number"]),
+                        )] = discovered_card_url
+                except (AcquisitionError, RaceImportConflictError, LookupError, ValueError) as error:
+                    self._record_race_failure(run_id, seed_key, error)
+                finally:
+                    self._database.refresh_meeting_week_run_progress(
+                        run_id, processed_count, current_target,
+                    )
+                    current_key = None
 
             for stored in self._database.list_meeting_week_races(run_id):
                 key = (str(stored["race_date"]), str(stored["racecourse"]), int(stored["race_number"]))
@@ -520,60 +544,60 @@ class MeetingWeekAcquisitionService:
                     )
                     current_key = None
                     continue
-                current_target = selected_card_url
-                race, runners, card_observation, card_body = self._race_cards.acquire(
-                    selected_card_url, self._now(),
-                )
-                card_id = self._database.save_acquired_race_card(race, runners, card_observation)
-                self._database.update_meeting_week_race(
-                    run_id, *key, state="odds_waiting", updated_at=utc_iso(self._now()), card_id=card_id,
-                )
-                odds_url = extract_odds_url(card_body, "text/html", selected_card_url)
-                if odds_url is None:
+                try:
+                    current_target = selected_card_url
+                    race, runners, card_observation, card_body = self._race_cards.acquire(
+                        selected_card_url, self._now(),
+                    )
+                    card_id = self._database.save_acquired_race_card(race, runners, card_observation)
+                    self._database.update_meeting_week_race(
+                        run_id, *key, state="odds_waiting", updated_at=utc_iso(self._now()), card_id=card_id,
+                    )
+                    odds_url = extract_odds_url(card_body, "text/html", selected_card_url)
+                    if odds_url is None:
+                        continue
+                    current_target = odds_url
+                    odds, odds_observation = self._odds.acquire(odds_url, self._now())
+                    existing_snapshot = self._database.find_jra_odds_snapshot(
+                        card_id, str(odds_observation["url"]), str(odds_observation["response_sha256"]),
+                    )
+                    if existing_snapshot is None:
+                        race_id, snapshot_id = self._database.register_jra_race_with_odds(
+                            card_id, odds, odds_observation,
+                        )
+                    else:
+                        race_id, snapshot_id = existing_snapshot
+                    state = "judgement_waiting"
+                    judgement_id: int | None = None
+                    observed_at = odds_observation["source_updated_at"]
+                    if observed_at is not None:
+                        rule_rows = self._database.list_rule_versions()
+                        rule_id = int(rule_rows[-1]["id"])
+                        existing_judgement = self._database.find_active_rule_judgement(
+                            race_id, snapshot_id, rule_id,
+                        )
+                        if existing_judgement is not None:
+                            judgement_id = existing_judgement
+                            state = "ready"
+                        else:
+                            try:
+                                judgement_id = self._database.create_rule_judgement(
+                                    race_id, snapshot_id, rule_id, str(observed_at), utc_iso(self._now()),
+                                )
+                                state = "ready"
+                            except ValueError:
+                                state = "judgement_waiting"
+                    self._database.update_meeting_week_race(
+                        run_id, *key, state=state, updated_at=utc_iso(self._now()),
+                        race_id=race_id, snapshot_id=snapshot_id, judgement_id=judgement_id,
+                    )
+                except (AcquisitionError, RaceImportConflictError, LookupError, ValueError) as error:
+                    self._record_race_failure(run_id, key, error)
+                finally:
                     self._database.refresh_meeting_week_run_progress(
                         run_id, processed_count, current_target,
                     )
                     current_key = None
-                    continue
-                current_target = odds_url
-                odds, odds_observation = self._odds.acquire(odds_url, self._now())
-                existing_snapshot = self._database.find_jra_odds_snapshot(
-                    card_id, str(odds_observation["url"]), str(odds_observation["response_sha256"]),
-                )
-                if existing_snapshot is None:
-                    race_id, snapshot_id = self._database.register_jra_race_with_odds(
-                        card_id, odds, odds_observation,
-                    )
-                else:
-                    race_id, snapshot_id = existing_snapshot
-                state = "judgement_waiting"
-                judgement_id: int | None = None
-                observed_at = odds_observation["source_updated_at"]
-                if observed_at is not None:
-                    rule_rows = self._database.list_rule_versions()
-                    rule_id = int(rule_rows[-1]["id"])
-                    existing_judgement = self._database.find_active_rule_judgement(
-                        race_id, snapshot_id, rule_id,
-                    )
-                    if existing_judgement is not None:
-                        judgement_id = existing_judgement
-                        state = "ready"
-                    else:
-                        try:
-                            judgement_id = self._database.create_rule_judgement(
-                                race_id, snapshot_id, rule_id, str(observed_at), utc_iso(self._now()),
-                            )
-                            state = "ready"
-                        except ValueError:
-                            state = "judgement_waiting"
-                self._database.update_meeting_week_race(
-                    run_id, *key, state=state, updated_at=utc_iso(self._now()),
-                    race_id=race_id, snapshot_id=snapshot_id, judgement_id=judgement_id,
-                )
-                self._database.refresh_meeting_week_run_progress(
-                    run_id, processed_count, current_target,
-                )
-                current_key = None
             self._database.finish_meeting_week_run(run_id, "completed", utc_iso(self._now()))
         except (AcquisitionError, RaceImportConflictError, LookupError, ValueError) as error:
             if isinstance(error, AcquisitionError) and error.observation is not None:

@@ -17,6 +17,8 @@ HOLIDAY_URL = "https://www.jra.go.jp/keiba/calendar2026/2026/8/0831.html"
 SELECTION_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3"
 CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0106202604010120260905/42"
 ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html?CNAME=pw151ouS306202604010120260905Z/DD"
+SECOND_CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0106202604010220260905/43"
+SECOND_ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html?CNAME=pw151ouS306202604010220260905Z/DE"
 ROBOTS_URL = "https://www.jra.go.jp/robots.txt"
 
 INDEX_HTML = f"""<!doctype html><html><body>
@@ -79,6 +81,21 @@ ODDS_HTML = """<!doctype html><html><body>
 <tr><td>枠1白</td><td>1</td><td>アサヒノソラ</td><td>18.1</td><td>2.8 - 4.4</td></tr>
 <tr><td>枠2黒</td><td>2</td><td>ツキノミチ</td><td>2.5</td><td>1.2 - 1.4</td></tr>
 </table></body></html>""".encode()
+
+TWO_RACE_PROGRAM = SATURDAY_PROGRAM.replace(
+    b"</table>", "<tr><td>2レース</td><td>3歳未勝利 1,800（芝）</td><td>10時40分</td></tr></table>".encode(),
+)
+SECOND_CARD_HTML = (BASE_CARD
+    .replace("2026年8月30日（日曜） 3回架空2日".encode(), "2026年9月5日（土曜） 4回中山1日".encode())
+    .replace("7レース".encode(), "2レース".encode())
+    .replace("13時25分".encode(), "10時40分".encode())
+    .replace("架空記念".encode(), "3歳未勝利".encode())
+    .replace(b"</body>", (
+        f'<a href="{SECOND_CARD_URL.removeprefix("https://www.jra.go.jp")}">2レース</a>'
+        f'<a href="#" onclick="return doAction(\'/JRADB/accessO.html\', \'{SECOND_ODDS_URL.split("CNAME=")[1]}\');">オッズ</a>'
+        '<p>オッズ更新時刻：9時05分</p></body>'
+    ).encode()))
+SECOND_ODDS_HTML = ODDS_HTML.replace("1レース".encode(), "2レース".encode())
 
 
 class MappingFetcher:
@@ -332,6 +349,47 @@ def test_week_run_registers_available_card_odds_and_fixed_rule_judgement(tmp_pat
     assert fetcher.urls.index(CARD_URL) < fetcher.urls.index(ODDS_URL)
 
 
+def test_week_run_keeps_processing_after_one_race_card_fails(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    selection = f"""<html><body>
+      <a href="{CARD_URL.removeprefix('https://www.jra.go.jp')}">1レース</a>
+      <a href="{SECOND_CARD_URL.removeprefix('https://www.jra.go.jp')}">2レース</a>
+    </body></html>""".encode()
+    app = create_app(
+        tmp_path / "partial-card-failure.sqlite3",
+        now_provider=lambda: datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc),
+        jra_fetcher=MappingFetcher({
+            INDEX_URL: page(INDEX_URL, INDEX_HTML.replace(
+                f'<a href="/keiba/calendar2026/2026/9/0906.html">9月6日</a>'.encode(), b"",
+            )),
+            SATURDAY_URL: page(SATURDAY_URL, TWO_RACE_PROGRAM),
+            SELECTION_URL: page(
+                SELECTION_URL, selection, final_url="https://www.jra.go.jp/JRADB/accessD.html",
+            ),
+            CARD_URL: page(CARD_URL, b"<html>invalid race card</html>"),
+            SECOND_CARD_URL: page(SECOND_CARD_URL, SECOND_CARD_HTML),
+            SECOND_ODDS_URL: page(
+                SECOND_ODDS_URL, SECOND_ODDS_HTML,
+                final_url="https://www.jra.go.jp/JRADB/accessO.html",
+            ),
+        }),
+        weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+
+    assert current["status"] == "completed"
+    assert current["ready_count"] == 1
+    assert current["failed_count"] == 1
+    assert [(race["race_number"], race["state"], race["error_code"]) for race in current["races"]] == [
+        (1, "stopped", "race_card_validation_failed"),
+        (2, "ready", None),
+    ]
+
+
 def test_week_run_stops_after_a_refusal_but_keeps_discovered_races(tmp_path: Path) -> None:
     tasks, starter = deferred_tasks()
     fetcher = MappingFetcher({
@@ -385,7 +443,8 @@ def test_race_state_records_the_error_when_odds_acquisition_stops(tmp_path: Path
         tasks.pop()()
         current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
 
-    assert current["status"] == "stopped"
+    assert current["status"] == "completed"
+    assert current["failed_count"] == 1
     assert current["races"][0]["state"] == "stopped"
     assert current["races"][0]["error_code"] == "acquisition_stopped"
 
