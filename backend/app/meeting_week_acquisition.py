@@ -116,7 +116,7 @@ class _ProgramParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         lowered = tag.lower()
-        if lowered in {"h1", "h2", "h3", "h4"}:
+        if lowered in {"h1", "h2", "h3", "h4", "caption"}:
             self.heading_tag = lowered
             self.heading_parts = []
         elif lowered == "tr":
@@ -179,8 +179,9 @@ def validate_calendar_url(url: str) -> None:
 def discover_program_urls(body: bytes, content_type: str, index_url: str,
                           week_start: date, week_end: date) -> list[str]:
     validate_calendar_url(index_url)
+    html = decode_html(body, content_type)
     parser = _LinkParser()
-    parser.feed(decode_html(body, content_type))
+    parser.feed(html)
     urls: set[str] = set()
     recognized_program_link = False
     for link in parser.links:
@@ -198,7 +199,22 @@ def discover_program_urls(body: bytes, content_type: str, index_url: str,
             continue
         if week_start <= candidate_date <= week_end:
             urls.add(candidate)
-    if not recognized_program_link:
+    if not recognized_program_link and "/keiba/common/calendar/cal.js" in html and re.search(
+        r"id\s*=\s*['\"]cal_unit['\"]", html, re.IGNORECASE,
+    ):
+        index_match = CALENDAR_INDEX_PATTERN.fullmatch(urlparse(index_url).path)
+        if index_match is None:
+            raise AcquisitionError("calendar_validation_failed", "JRA開催日程を検証できませんでした。", 503)
+        index_year = int(index_match.group("year"))
+        candidate_date = week_start
+        while candidate_date <= week_end:
+            if candidate_date.year == index_year:
+                urls.add(
+                    f"https://{ALLOWED_HOST}/keiba/calendar{index_year}/{index_year}/"
+                    f"{candidate_date.month}/{candidate_date:%m%d}.html"
+                )
+            candidate_date += timedelta(days=1)
+    elif not recognized_program_link:
         raise AcquisitionError(
             "calendar_validation_failed", "JRA開催日程を検証できませんでした。CSV取込を使用してください。", 503,
         )
@@ -297,7 +313,7 @@ class JraMeetingWeekAcquirer:
             )
         response = self._fetcher(url)
         allowed_final = {url} if url != SELECTION_URL else {url, SELECTION_FINAL_URL}
-        if optional and response.status in {404, 410}:
+        if optional and response.status in {403, 404, 410}:
             raise ResourceNotPublished
         if response.status != 200 or unquote(response.final_url) not in {unquote(value) for value in allowed_final}:
             raise audited_error(
@@ -455,7 +471,12 @@ class MeetingWeekAcquisitionService:
                 )
             for program_url in sorted(program_urls):
                 current_target = program_url
-                program_body, program_content_type, program_observation = self._discovery.acquire(program_url, self._now())
+                try:
+                    program_body, program_content_type, program_observation = self._discovery.acquire(
+                        program_url, self._now(), optional=True,
+                    )
+                except ResourceNotPublished:
+                    continue
                 rows = parse_program(program_body, program_content_type, program_url)
                 self._database.save_meeting_week_observation(run_id, program_observation)
                 for row in rows:

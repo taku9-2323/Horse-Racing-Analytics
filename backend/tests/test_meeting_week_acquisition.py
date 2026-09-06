@@ -39,6 +39,14 @@ SUNDAY_PROGRAM = """<!doctype html><html><body>
 <tr><td>1レース</td><td>2歳未勝利 1,800（芝）</td><td>10時05分</td></tr></table>
 </body></html>""".encode()
 
+CURRENT_JRA_PROGRAM = """<!doctype html><html><body>
+<h1>2026年9月5日（土曜） 競馬番組</h1>
+<table><caption><div><div>4回中山1日</div></div></caption>
+<tbody><tr><th scope="row">1<span>レース</span></th><td>
+<p>2歳未勝利</p><p><span>1,200</span><span>（ダ）</span></p>
+</td><td>9時50分</td></tr></tbody></table>
+</body></html>""".encode()
+
 HOLIDAY_PROGRAM = """<!doctype html><html><body>
 <h1>2026年8月31日（月曜） 競馬番組</h1>
 <h2>4回中山3日</h2>
@@ -151,6 +159,29 @@ def test_week_run_keeps_program_rows_when_entries_are_not_published(tmp_path: Pa
     assert payload["last_updated_at"] == "2026-09-02T03:00:00Z"
 
 
+def test_week_run_parses_the_current_jra_caption_program_structure(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    app = create_app(
+        tmp_path / "current-program.sqlite3",
+        now_provider=lambda: datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        jra_fetcher=MappingFetcher({
+            INDEX_URL: page(INDEX_URL, f'<a href="{SATURDAY_URL}">開催日</a>'.encode()),
+            SATURDAY_URL: page(SATURDAY_URL, CURRENT_JRA_PROGRAM),
+        }),
+        weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+
+    assert current["status"] == "completed"
+    assert [(race["racecourse"], race["race_number"], race["race_name"]) for race in current["races"]] == [
+        ("中山", 1, "2歳未勝利"),
+    ]
+
+
 def test_week_run_includes_a_weekday_meeting_listed_by_the_official_calendar(tmp_path: Path) -> None:
     tasks, starter = deferred_tasks()
     holiday_index = f"""<html><body>
@@ -192,6 +223,37 @@ def test_week_run_stops_when_the_calendar_link_structure_is_unrecognizable(tmp_p
 
     assert current["status"] == "stopped"
     assert current["last_target"] == INDEX_URL
+
+
+def test_week_run_discovers_programs_from_the_dynamic_calendar_shell(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    dynamic_index = b"""<!doctype html><html><head>
+      <script src="/keiba/common/calendar/cal.js?version=2026"></script>
+    </head><body><div id="cal_unit"></div></body></html>"""
+    fetcher = MappingFetcher({
+        INDEX_URL: page(INDEX_URL, dynamic_index),
+        HOLIDAY_URL: page(HOLIDAY_URL, b"", status=403),
+        SATURDAY_URL: page(SATURDAY_URL, SATURDAY_PROGRAM),
+        SUNDAY_URL: page(SUNDAY_URL, SUNDAY_PROGRAM),
+    })
+    app = create_app(
+        tmp_path / "dynamic-calendar.sqlite3",
+        now_provider=lambda: datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        jra_fetcher=fetcher, weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+
+    assert current["status"] == "completed"
+    assert [(race["race_date"], race["racecourse"]) for race in current["races"]] == [
+        ("2026-09-05", "中山"),
+        ("2026-09-06", "中山"),
+    ]
+    assert SATURDAY_URL in fetcher.urls
+    assert SUNDAY_URL in fetcher.urls
 
 
 def test_week_run_persists_progress_before_the_run_finishes(tmp_path: Path) -> None:
