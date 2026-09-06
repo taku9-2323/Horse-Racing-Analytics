@@ -345,7 +345,11 @@ def test_week_run_registers_available_card_odds_and_fixed_rule_judgement(tmp_pat
         SATURDAY_URL: page(SATURDAY_URL, SATURDAY_PROGRAM),
         SELECTION_URL: page(SELECTION_URL, SELECTION_HTML, final_url="https://www.jra.go.jp/JRADB/accessD.html"),
         CARD_URL: page(CARD_URL, CARD_HTML),
-        ODDS_URL: page(ODDS_URL, ODDS_HTML, final_url="https://www.jra.go.jp/JRADB/accessO.html"),
+        ODDS_URL: page(
+            ODDS_URL,
+            ODDS_HTML.replace("オッズ更新時刻：9時05分".encode(), "9時05分現在オッズ".encode()),
+            final_url="https://www.jra.go.jp/JRADB/accessO.html",
+        ),
     })
     app = create_app(
         tmp_path / "ready.sqlite3",
@@ -375,6 +379,59 @@ def test_week_run_registers_available_card_odds_and_fixed_rule_judgement(tmp_pat
     odds_digest = sha256(ODDS_URL.encode("utf-8")).hexdigest()
     assert list((tmp_path / "jra-html-cache").glob(f"odds-{odds_digest}-*.html"))
     assert fetcher.urls.index(CARD_URL) < fetcher.urls.index(ODDS_URL)
+
+
+def test_week_run_recovers_the_published_odds_time_from_cached_html(tmp_path: Path) -> None:
+    tasks, starter = deferred_tasks()
+    clock = [datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)]
+    database_path = tmp_path / "legacy-odds-time.sqlite3"
+    current_odds_html = (
+        ODDS_HTML.replace(b"<html>", b'<html><meta charset="utf-8">')
+        .replace("オッズ更新時刻：9時05分".encode(), "9時05分現在オッズ".encode())
+    )
+    fetcher = MappingFetcher({
+        INDEX_URL: page(INDEX_URL, INDEX_HTML.replace(
+            f'<a href="/keiba/calendar2026/2026/9/0906.html">9月6日</a>'.encode(), b"",
+        )),
+        SATURDAY_URL: page(SATURDAY_URL, SATURDAY_PROGRAM),
+        SELECTION_URL: page(
+            SELECTION_URL, SELECTION_HTML, final_url="https://www.jra.go.jp/JRADB/accessD.html",
+        ),
+        CARD_URL: page(CARD_URL, CARD_HTML),
+        ODDS_URL: page(
+            ODDS_URL, current_odds_html, final_url="https://www.jra.go.jp/JRADB/accessO.html",
+        ),
+    })
+    app = create_app(
+        database_path, now_provider=lambda: clock[0], jra_fetcher=fetcher,
+        weekly_task_starter=starter,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("DELETE FROM runner_rule_judgements")
+            connection.execute("DELETE FROM rule_judgement_runs")
+            connection.execute("UPDATE odds_snapshots SET observed_at=NULL")
+            connection.execute(
+                "UPDATE jra_odds_observations SET source_updated_at=NULL, parser_version='jra-odds/1'",
+            )
+        fetcher.pages[ODDS_URL] = page(
+            ODDS_URL,
+            current_odds_html.replace("9時05分現在オッズ".encode(), b""),
+            final_url="https://www.jra.go.jp/JRADB/accessO.html",
+        )
+        clock[0] = datetime(2026, 9, 5, 0, 26, tzinfo=timezone.utc)
+        client.post("/api/acquisition/jra/meeting-weeks/current/runs")
+        tasks.pop()()
+        current = client.get("/api/acquisition/jra/meeting-weeks/current").json()
+        races = client.get("/api/races").json()
+        snapshots = client.get(f"/api/races/{races[0]['race_id']}/odds-snapshots").json()
+
+    assert current["ready_count"] == 1
+    assert len(snapshots) == 2
+    assert snapshots[-1]["observed_at"] == "2026-09-05T00:05:00Z"
 
 
 def test_week_run_reuses_the_registered_race_for_a_new_card_version(tmp_path: Path) -> None:

@@ -890,6 +890,7 @@ class SqliteDatabase:
 
     def find_jra_odds_snapshot(
         self, card_id: int, source_url: str, response_sha256: str,
+        parser_version: str, source_updated_at: str | None,
     ) -> tuple[int, int] | None:
         with sqlite3.connect(self._path) as connection:
             row = connection.execute(
@@ -900,9 +901,10 @@ class SqliteDatabase:
                     SELECT id FROM odds_snapshots WHERE race_id=registrations.race_id
                   )
                 WHERE registrations.card_id=? AND observations.source_url=?
-                  AND observations.response_sha256=?
+                  AND observations.response_sha256=? AND observations.parser_version=?
+                  AND observations.source_updated_at IS ?
                 ORDER BY observations.snapshot_id DESC LIMIT 1""",
-                (card_id, source_url, response_sha256),
+                (card_id, source_url, response_sha256, parser_version, source_updated_at),
             ).fetchone()
             if row is None:
                 return None

@@ -89,7 +89,7 @@ def test_registers_a_jra_card_and_odds_as_one_analysis_race_atomically(tmp_path:
     assert payload["snapshot_id"] > 0
     assert payload["observed_at"] is None
     assert payload["received_at"] == "2026-08-29T05:00:00Z"
-    assert payload["source"]["parser_version"] == "jra-odds/2"
+    assert payload["source"]["parser_version"] == "jra-odds/3"
     assert [runner["horse_number"] for runner in payload["runners"]] == [1, 2]
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM races").fetchone() == (1,)
@@ -162,6 +162,6 @@ def test_http_refusal_and_runner_mismatch_save_no_odds_snapshot(tmp_path: Path) 
             failures = client.get("/api/acquisition/jra/failures").json()
         assert response.status_code in {422, 503}
         if name != "mismatch":
-            assert any(failure["parser_version"] == "jra-odds/2" for failure in failures)
+            assert any(failure["parser_version"] == "jra-odds/3" for failure in failures)
         with sqlite3.connect(database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM odds_snapshots").fetchone() == (0,)

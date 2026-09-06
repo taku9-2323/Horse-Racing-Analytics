@@ -18,7 +18,7 @@ from pydantic import BaseModel
 ALLOWED_HOST = "www.jra.go.jp"
 ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
 PARSER_VERSION = "jra-race-entry/2"
-ODDS_PARSER_VERSION = "jra-odds/2"
+ODDS_PARSER_VERSION = "jra-odds/3"
 RESULT_PARSER_VERSION = "jra-result/1"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -397,6 +397,15 @@ class JraOddsAcquirer:
             odds = parse_jra_odds_page(body, content_type)
             validate_odds_page_identity(body, content_type, url)
             source_updated_at = parse_jra_odds_update_time(body, content_type, url)
+            if source_updated_at is None:
+                historical = self._load_latest_cache_with_published_time(url)
+                if historical is not None:
+                    body, response_received_at = historical
+                    content_type = "text/html"
+                    digest = sha256(body).hexdigest()
+                    odds = parse_jra_odds_page(body, content_type)
+                    validate_odds_page_identity(body, content_type, url)
+                    source_updated_at = parse_jra_odds_update_time(body, content_type, url)
         except AcquisitionError as error:
             error.observation = {"url": url, "received_at": response_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "parser_version": ODDS_PARSER_VERSION, "response_sha256": digest, "validation_status": "invalid", "error_code": error.code}
             raise
@@ -423,6 +432,25 @@ class JraOddsAcquirer:
         if not candidates or candidates[0].stat().st_mtime < minimum_mtime:
             return None
         return candidates[0].read_bytes()
+
+    def _load_latest_cache_with_published_time(self, url: str) -> tuple[bytes, datetime] | None:
+        if self._cache_directory is None or not self._cache_directory.is_dir():
+            return None
+        url_digest = sha256(url.encode("utf-8")).hexdigest()
+        candidates = sorted(
+            self._cache_directory.glob(f"odds-{url_digest}-*.html"),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+        for path in candidates:
+            body = path.read_bytes()
+            try:
+                parse_jra_odds_page(body, "text/html")
+                validate_odds_page_identity(body, "text/html", url)
+                if parse_jra_odds_update_time(body, "text/html", url) is not None:
+                    return body, datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            except AcquisitionError:
+                continue
+        return None
 
 
 class JraResultAcquirer:
@@ -860,16 +888,22 @@ def parse_jra_odds_page(body: bytes, content_type: str) -> list[dict[str, float 
 
 def parse_jra_odds_update_time(body: bytes, content_type: str, source_url: str) -> str | None:
     text = decode_html(body, content_type)
-    match = re.search(r"(?:オッズ)?更新(?:時刻|日時)?\s*[：:]\s*(\d{1,2})時(\d{2})分", text)
+    match = re.search(
+        r"(?:(?:オッズ)?更新(?:時刻|日時)?\s*[：:]\s*(\d{1,2})時(\d{2})分"
+        r"|(\d{1,2})時(\d{2})分現在オッズ)",
+        text,
+    )
     if match is None:
         return None
+    hour = int(match.group(1) or match.group(3))
+    minute = int(match.group(2) or match.group(4))
     cname = parse_qs(urlparse(source_url).query)["CNAME"][0]
     identity = ODDS_CNAME_PATTERN.fullmatch(cname)
     if identity is None:
         raise AcquisitionError("odds_validation_failed", "JRAオッズページを検証できませんでした。", 422)
     date_value = identity.group("date")
     local = datetime(int(date_value[:4]), int(date_value[4:6]), int(date_value[6:]),
-                     int(match.group(1)), int(match.group(2)), tzinfo=timezone(timedelta(hours=9)))
+                     hour, minute, tzinfo=timezone(timedelta(hours=9)))
     return local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 

@@ -583,6 +583,8 @@ class MeetingWeekAcquisitionService:
                     odds, odds_observation = self._odds.acquire(odds_url, self._now())
                     existing_snapshot = self._database.find_jra_odds_snapshot(
                         card_id, str(odds_observation["url"]), str(odds_observation["response_sha256"]),
+                        str(odds_observation["parser_version"]),
+                        cast(str | None, odds_observation["source_updated_at"]),
                     )
                     if existing_snapshot is None:
                         race_id, snapshot_id = self._database.register_jra_race_with_odds(
