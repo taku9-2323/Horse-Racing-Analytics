@@ -483,12 +483,22 @@ class JraResultAcquirer:
                     503, url, robots.body, received_at, RESULT_PARSER_VERSION,
                 )
             response = self._fetcher(url)
+            if response.status == 404:
+                raise audited_error(
+                    "result_not_published", "JRA結果ページはまだ公開されていません。",
+                    404, url, response.body, received_at, RESULT_PARSER_VERSION,
+                )
+            if response.status in {403, 429}:
+                raise audited_error(
+                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                    503, url, response.body, received_at, RESULT_PARSER_VERSION,
+                )
             if (response.status != 200 or not same_allowed_race_card_url(response.final_url, url)
                     or not response.headers.get("content-type", "").lower().startswith("text/html")
                     or len(response.body) > MAX_RESPONSE_BYTES):
                 raise audited_error(
-                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
-                    503, url, response.body, received_at, RESULT_PARSER_VERSION,
+                    "result_fetch_failed", "JRA結果ページを取得できませんでした。",
+                    502, url, response.body, received_at, RESULT_PARSER_VERSION,
                 )
             body = response.body
             content_type = response.headers.get("content-type", "")

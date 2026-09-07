@@ -534,6 +534,60 @@ class SqliteDatabase:
                 connection.execute("DROP TABLE runner_results")
                 connection.execute("ALTER TABLE runner_results_v15 RENAME TO runner_results")
             connection.execute("UPDATE application_metadata SET value = '15' WHERE key = 'schema_version'")
+            connection.execute("""CREATE TABLE IF NOT EXISTS bulk_result_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                page INTEGER NOT NULL, started_at TEXT NOT NULL, completed_at TEXT,
+                status TEXT NOT NULL CHECK (status IN ('running','completed','stopped')),
+                target_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                succeeded_count INTEGER NOT NULL DEFAULT 0,
+                missing_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                stop_reason TEXT
+            )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS bulk_result_targets (
+                run_id INTEGER NOT NULL REFERENCES bulk_result_runs(id),
+                race_id INTEGER NOT NULL REFERENCES races(id),
+                race_date TEXT NOT NULL, racecourse TEXT NOT NULL, race_number INTEGER NOT NULL,
+                source_url TEXT,
+                status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','missing','failed','stopped')),
+                error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, race_id)
+            )""")
+            connection.execute("UPDATE application_metadata SET value = '16' WHERE key = 'schema_version'")
+            bulk_run_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(bulk_result_runs)").fetchall()
+            }
+            if "missing_count" not in bulk_run_columns:
+                connection.execute(
+                    "ALTER TABLE bulk_result_runs ADD COLUMN missing_count INTEGER NOT NULL DEFAULT 0"
+                )
+            bulk_target_schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='bulk_result_targets'"
+            ).fetchone()
+            if bulk_target_schema is not None and (
+                "'missing'" not in str(bulk_target_schema[0])
+                or "error_message" not in str(bulk_target_schema[0])
+            ):
+                connection.execute("""CREATE TABLE bulk_result_targets_v17 (
+                    run_id INTEGER NOT NULL REFERENCES bulk_result_runs(id),
+                    race_id INTEGER NOT NULL REFERENCES races(id),
+                    race_date TEXT NOT NULL, racecourse TEXT NOT NULL, race_number INTEGER NOT NULL,
+                    source_url TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','missing','failed','stopped')),
+                    error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, race_id)
+                )""")
+                connection.execute("""INSERT INTO bulk_result_targets_v17
+                    (run_id,race_id,race_date,racecourse,race_number,source_url,status,error_code,
+                     error_message,updated_at)
+                    SELECT run_id,race_id,race_date,racecourse,race_number,source_url,status,error_code,
+                           NULL,updated_at FROM bulk_result_targets""")
+                connection.execute("DROP TABLE bulk_result_targets")
+                connection.execute("ALTER TABLE bulk_result_targets_v17 RENAME TO bulk_result_targets")
+            connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_running_bulk_result
+                ON bulk_result_runs(status) WHERE status='running'""")
+            connection.execute("UPDATE application_metadata SET value = '17' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -541,8 +595,127 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("15",):
+        if row != ("17",):
             raise RuntimeError("SQLite schema is not ready")
+
+    def has_running_bulk_result(self) -> bool:
+        with sqlite3.connect(self._path) as connection:
+            return connection.execute(
+                "SELECT 1 FROM bulk_result_runs WHERE status='running' LIMIT 1",
+            ).fetchone() is not None
+
+    def stop_stale_bulk_result_runs(self, stopped_at: str) -> None:
+        with sqlite3.connect(self._path) as connection:
+            running = [int(row[0]) for row in connection.execute(
+                "SELECT id FROM bulk_result_runs WHERE status='running'"
+            ).fetchall()]
+            for run_id in running:
+                connection.execute("""UPDATE bulk_result_targets
+                    SET status='stopped',error_code='interrupted',
+                        error_message='前回の一括取得はアプリ終了により中断されました。',updated_at=?
+                    WHERE run_id=? AND status IN ('pending','running')""", (stopped_at, run_id))
+                counts = dict(connection.execute("""SELECT status,COUNT(*)
+                    FROM bulk_result_targets WHERE run_id=? GROUP BY status""", (run_id,)).fetchall())
+                processed = sum(int(counts.get(status, 0)) for status in (
+                    "succeeded", "missing", "failed", "stopped",
+                ))
+                connection.execute("""UPDATE bulk_result_runs SET status='stopped',completed_at=?,
+                    processed_count=?,succeeded_count=?,missing_count=?,failed_count=?,
+                    stop_reason='interrupted' WHERE id=?""", (
+                    stopped_at, processed, int(counts.get("succeeded", 0)),
+                    int(counts.get("missing", 0)),
+                    int(counts.get("failed", 0)) + int(counts.get("stopped", 0)), run_id,
+                ))
+
+    def create_bulk_result_run(
+        self, current_week_start: str, page: int, started_at: str, weeks_per_page: int = 4,
+    ) -> int:
+        _, selected_weeks, _ = self.list_past_attention(current_week_start, page, weeks_per_page)
+        with sqlite3.connect(self._path) as connection:
+            try:
+                run_id = connection.execute(
+                    "INSERT INTO bulk_result_runs (page,started_at,status) VALUES (?,?,'running')",
+                    (page, started_at),
+                ).lastrowid
+            except sqlite3.IntegrityError as error:
+                raise RuntimeError("bulk_result_run_in_progress") from error
+            if run_id is None:
+                raise RuntimeError("Bulk result run could not be saved")
+            targets: list[sqlite3.Row] = []
+            if selected_weeks:
+                connection.row_factory = sqlite3.Row
+                oldest = selected_weeks[-1]
+                newest_end = (date.fromisoformat(selected_weeks[0]) + timedelta(days=6)).isoformat()
+                targets = connection.execute("""SELECT DISTINCT race.id AS race_id,
+                    race.race_date,race.racecourse,race.race_number,card.source_url
+                    FROM races AS race
+                    JOIN rule_judgement_runs AS judgement
+                      ON judgement.race_id=race.id AND judgement.status='active'
+                    JOIN runner_rule_judgements AS judged
+                      ON judged.judgement_run_id=judgement.id AND judged.judgement='注目'
+                    LEFT JOIN result_versions AS result
+                      ON result.race_id=race.id AND result.status='active'
+                    LEFT JOIN acquired_race_cards AS card ON card.id=(
+                      SELECT MAX(registration.card_id) FROM jra_race_registrations AS registration
+                      JOIN acquired_race_cards AS registered_card ON registered_card.id=registration.card_id
+                      WHERE registration.race_id=race.id AND registered_card.status='active')
+                    WHERE race.race_date BETWEEN ? AND ? AND result.id IS NULL
+                    ORDER BY race.race_date DESC,race.start_time DESC,race.racecourse,race.race_number DESC""",
+                    (oldest, newest_end),
+                ).fetchall()
+            connection.executemany("""INSERT INTO bulk_result_targets
+                (run_id,race_id,race_date,racecourse,race_number,source_url,status,updated_at)
+                VALUES (?,?,?,?,?,?,'pending',?)""", [(
+                    run_id, int(row["race_id"]), str(row["race_date"]), str(row["racecourse"]),
+                    int(row["race_number"]), row["source_url"], started_at,
+                ) for row in targets])
+            connection.execute(
+                "UPDATE bulk_result_runs SET target_count=? WHERE id=?", (len(targets), run_id),
+            )
+            return int(run_id)
+
+    def get_bulk_result_run(self, run_id: int) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            run = connection.execute("SELECT * FROM bulk_result_runs WHERE id=?", (run_id,)).fetchone()
+            if run is None:
+                return None
+            targets = connection.execute(
+                "SELECT * FROM bulk_result_targets WHERE run_id=? ORDER BY race_date DESC,racecourse,race_number DESC",
+                (run_id,),
+            ).fetchall()
+            return run, targets
+
+    def update_bulk_result_target(
+        self, run_id: int, race_id: int, status: str, error_code: str | None,
+        error_message: str | None, updated_at: str,
+    ) -> None:
+        with sqlite3.connect(self._path) as connection:
+            connection.execute("""UPDATE bulk_result_targets
+                SET status=?,error_code=?,error_message=?,updated_at=?
+                WHERE run_id=? AND race_id=?""",
+                (status, error_code, error_message, updated_at, run_id, race_id))
+
+    def refresh_bulk_result_run(self, run_id: int, stop_reason: str | None = None) -> None:
+        with sqlite3.connect(self._path) as connection:
+            counts = dict(connection.execute("""SELECT status,COUNT(*) FROM bulk_result_targets
+                WHERE run_id=? GROUP BY status""", (run_id,)).fetchall())
+            processed = sum(int(counts.get(status, 0)) for status in (
+                "succeeded", "missing", "failed", "stopped",
+            ))
+            connection.execute("""UPDATE bulk_result_runs SET processed_count=?,succeeded_count=?,
+                missing_count=?,failed_count=?,status=?,stop_reason=COALESCE(?,stop_reason) WHERE id=?""", (
+                processed, int(counts.get("succeeded", 0)),
+                int(counts.get("missing", 0)),
+                int(counts.get("failed", 0)) + int(counts.get("stopped", 0)),
+                "stopped" if stop_reason is not None else "running", stop_reason, run_id,
+            ))
+
+    def complete_bulk_result_run(self, run_id: int, completed_at: str) -> None:
+        self.refresh_bulk_result_run(run_id)
+        with sqlite3.connect(self._path) as connection:
+            connection.execute("""UPDATE bulk_result_runs SET status='completed',completed_at=?
+                WHERE id=? AND status='running'""", (completed_at, run_id))
 
     def start_meeting_week_run(self, week_start: str, week_end: str, started_at: str) -> int:
         with sqlite3.connect(self._path) as connection:

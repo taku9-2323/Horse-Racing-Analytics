@@ -326,6 +326,17 @@ th { color: #8f9b94; font-weight: 500; }
 .past-badges small { border: 1px solid rgba(220, 204, 170, .25); border-radius: 999px; padding: 4px 7px; color: #b9c3bd; white-space: nowrap; }
 .past-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 18px; }
 .past-pagination span { color: #8f9b94; font-size: .76rem; }
+.bulk-result-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 28px; border-top: 1px solid rgba(220, 204, 170, .12); }
+.bulk-result-actions span { color: #8f9b94; font-size: .72rem; }
+.bulk-result-message { margin: 0; padding: 12px 28px 18px; color: #aeb8b2; }
+.bulk-result-message.error { color: #e4aaa1; }
+.bulk-result-progress { display: grid; grid-template-columns: auto minmax(8rem, 1fr) auto; align-items: center; gap: 12px; padding: 14px 28px 18px; border-top: 1px solid rgba(220, 204, 170, .12); }
+.bulk-result-progress strong { color: #dcccaa; font-size: .78rem; }
+.bulk-result-progress progress { width: 100%; accent-color: #65c984; }
+.bulk-result-progress > span { color: #aeb8b2; font-size: .72rem; }
+.bulk-result-progress > small { grid-column: 1 / -1; color: #e4aaa1; }
+.bulk-result-fallback { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid rgba(220, 116, 107, .35); }
+.bulk-result-fallback p { margin: 0; color: #e4aaa1; font-size: .76rem; }
 .maintenance-actions a {
   display: inline-flex;
   align-items: center;
@@ -526,6 +537,9 @@ footer {
   .past-result { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
   .past-badges { grid-column: 1 / -1; justify-content: flex-start; }
   .past-pagination { align-items: stretch; flex-direction: column; text-align: center; }
+  .bulk-result-actions, .bulk-result-fallback { align-items: stretch; flex-direction: column; padding-right: 20px; padding-left: 20px; }
+  .bulk-result-progress { grid-template-columns: 1fr; padding-right: 20px; padding-left: 20px; }
+  .bulk-result-progress > small, .bulk-result-fallback { grid-column: 1; }
   .backup-list li { align-items: stretch; flex-direction: column; }
 
   .status-card {

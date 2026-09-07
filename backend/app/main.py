@@ -53,6 +53,7 @@ from app.meeting_week_acquisition import (
 )
 from app.weekly_race_view import WeeklyRaceDecisionView, weekly_race_decision_view
 from app.past_attention import PastAttentionPage, past_attention_page
+from app.bulk_results import BulkResultAcquisitionService, BulkResultRun, bulk_result_response
 
 
 class ComponentHealth(BaseModel):
@@ -121,6 +122,10 @@ def create_app(
         database.stop_stale_meeting_week_runs(
             current_time().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
+    if database_initialization_error is None and database.has_running_bulk_result():
+        database.stop_stale_bulk_result_runs(
+            current_time().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
     data_maintenance = DataMaintenance(resolved_database_path, current_time)
     if jra_fetcher is not None:
         fetcher = jra_fetcher
@@ -144,6 +149,9 @@ def create_app(
     meeting_week_acquirer = JraMeetingWeekAcquirer(fetcher, cache_directory)
     meeting_week_service = MeetingWeekAcquisitionService(
         database, meeting_week_acquirer, race_card_acquirer, odds_acquirer, current_time,
+    )
+    bulk_result_service = BulkResultAcquisitionService(
+        database, result_acquirer, current_time, utc_iso,
     )
 
     def start_weekly_task(task: Callable[[], None]) -> None:
@@ -227,6 +235,43 @@ def create_app(
     def get_past_attention(page: Annotated[int, Query(ge=1)] = 1) -> PastAttentionPage:
         week_start, _ = current_meeting_week(current_time())
         return past_attention_page(database, week_start.isoformat(), page)
+
+    @app.post(
+        "/api/past-attention/result-runs", response_model=BulkResultRun, status_code=202,
+    )
+    def start_past_attention_result_run(
+        page: Annotated[int, Query(ge=1)] = 1,
+    ) -> BulkResultRun:
+        week_start, _ = current_meeting_week(current_time())
+        try:
+            run_id = database.create_bulk_result_run(
+                week_start.isoformat(), page, utc_iso(current_time()),
+            )
+        except RuntimeError as error:
+            if str(error) != "bulk_result_run_in_progress":
+                raise
+            raise HTTPException(status_code=409, detail={
+                "code": "bulk_result_run_in_progress",
+                "message": "別の一括結果取得が進行中です。完了後に再試行してください。",
+            }) from error
+        response = bulk_result_response(database, run_id)
+        if response is None:
+            raise HTTPException(status_code=500, detail="一括結果取得を開始できませんでした。")
+        if response.target_count == 0:
+            database.complete_bulk_result_run(run_id, utc_iso(current_time()))
+        else:
+            start_weekly_task(lambda: bulk_result_service.run(run_id))
+        completed_or_running = bulk_result_response(database, run_id)
+        if completed_or_running is None:
+            raise HTTPException(status_code=500, detail="一括結果取得を開始できませんでした。")
+        return completed_or_running
+
+    @app.get("/api/past-attention/result-runs/{run_id}", response_model=BulkResultRun)
+    def get_past_attention_result_run(run_id: int) -> BulkResultRun:
+        response = bulk_result_response(database, run_id)
+        if response is None:
+            raise HTTPException(status_code=404, detail="一括結果取得が見つかりません。")
+        return response
 
     @app.post("/api/acquisition/jra/race-card", response_model=AcquiredRaceCard, status_code=201)
     def acquire_jra_race_card(request: RaceCardRequest) -> AcquiredRaceCard:

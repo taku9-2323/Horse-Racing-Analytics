@@ -21,6 +21,17 @@ type PastAttentionPage = {
   has_newer: boolean; has_older: boolean; weeks: PastAttentionWeek[];
 };
 
+type BulkResultRun = {
+  run_id: number; page: number; status: "running" | "completed" | "stopped";
+  started_at: string; completed_at: string | null;
+  target_count: number; processed_count: number; succeeded_count: number; missing_count: number;
+  failed_count: number;
+  stop_reason: string | null;
+  targets: Array<{ race_id: number; race_date: string; racecourse: string; race_number: number;
+    status: "pending" | "running" | "succeeded" | "missing" | "failed" | "stopped";
+    error_code: string | null; error_message: string | null }>;
+};
+
 type ResultFilter = "all" | "first" | "placed" | "other" | "withdrawn" | "missing";
 type TimingFilter = "all" | "pre" | "post";
 
@@ -64,6 +75,11 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
   const [detail, setDetail] = useState<DecisionView | null>(null);
   const [selectedHorseNumber, setSelectedHorseNumber] = useState<number>();
   const [detailState, setDetailState] = useState<"idle" | "loading" | "error">("idle");
+  const [bulkRun, setBulkRun] = useState<BulkResultRun | null>(null);
+  const [bulkState, setBulkState] = useState<"idle" | "starting" | "error">("idle");
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [pollAttempt, setPollAttempt] = useState(0);
+  const [pollDelay, setPollDelay] = useState(400);
   const listScroll = useRef(0);
 
   useEffect(() => {
@@ -82,7 +98,30 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
     };
     void load();
     return () => controller.abort();
-  }, [pageNumber]);
+  }, [pageNumber, refreshVersion]);
+
+  useEffect(() => {
+    if (bulkRun?.status !== "running") return;
+    const timeout = window.setTimeout(() => {
+      const poll = async () => {
+        try {
+          const response = await fetch(`/api/past-attention/result-runs/${bulkRun.run_id}`);
+          if (!response.ok) throw new Error();
+          const next = await response.json() as BulkResultRun;
+          setBulkRun(next);
+          setBulkState("idle");
+          setPollDelay(400);
+          if (next.status !== "running") setRefreshVersion((value) => value + 1);
+        } catch {
+          setBulkState("error");
+          setPollDelay((value) => Math.min(value * 2, 5000));
+          setPollAttempt((value) => value + 1);
+        }
+      };
+      void poll();
+    }, pollDelay);
+    return () => window.clearTimeout(timeout);
+  }, [bulkRun, pollAttempt, pollDelay]);
 
   const pageHorses = useMemo(
     () => (page?.weeks ?? []).flatMap((week) => week.horses),
@@ -135,6 +174,22 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
     window.setTimeout(() => window.scrollTo({ top: listScroll.current }), 0);
   };
 
+  const startBulkResultRun = async () => {
+    setBulkState("starting");
+    setPollAttempt(0);
+    setPollDelay(400);
+    try {
+      const response = await fetch(`/api/past-attention/result-runs?page=${pageNumber}`, { method: "POST" });
+      if (!response.ok) throw new Error();
+      const run = await response.json() as BulkResultRun;
+      setBulkRun(run);
+      setBulkState("idle");
+      if (run.status !== "running") setRefreshVersion((value) => value + 1);
+    } catch {
+      setBulkState("error");
+    }
+  };
+
   if (detail) {
     return <RaceDecisionDetail detail={detail} dataState="判定済み / 発走後"
       backLabel="過去レースへ戻る" onBack={back} selectedHorseNumber={selectedHorseNumber}
@@ -178,6 +233,30 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
         ] as const).map(([value, label]) => <button key={value} type="button"
           aria-pressed={resultFilter === value} onClick={() => setResultFilter(value)}>{label}</button>)}
       </div>
+      <div className="bulk-result-actions">
+        <button type="button" disabled={bulkState === "starting" || bulkRun?.status === "running"}
+          onClick={() => void startBulkResultRun()}>
+          {bulkRun && (bulkRun.missing_count > 0 || bulkRun.failed_count > 0)
+            ? "未取得・失敗を再試行" : "表示中の未取得結果を一括取得"}
+        </button>
+        <span>表示中の4開催週だけを、JRAから直列・低頻度で取得します。</span>
+      </div>
+      {bulkState === "starting" && <p className="bulk-result-message" role="status">一括取得を開始しています…</p>}
+      {bulkState === "error" && <div className="bulk-result-message error" role="alert">
+        一括取得の状態を確認できませんでした。自動で再確認します。
+        <button type="button" onClick={() => setPollAttempt((value) => value + 1)}>今すぐ状態を再確認</button>
+      </div>}
+      {bulkRun && <div className={`bulk-result-progress ${bulkRun.status}`} aria-live="polite">
+        <strong>{bulkRun.processed_count} / {bulkRun.target_count} レース処理済み</strong>
+        <progress max={Math.max(1, bulkRun.target_count)} value={bulkRun.processed_count} />
+        <span>{bulkRun.succeeded_count}件取得 / {bulkRun.missing_count}件未取得 / {bulkRun.failed_count}件失敗</span>
+        {bulkRun.status === "stopped" && <div className="bulk-result-fallback">
+          <p>JRAからの取得を停止しました。失敗したレースは保存済み結果を変更していません。</p>
+          {onNavigate && <button type="button" onClick={() => onNavigate("import")}>個別URL・CSV取込へ</button>}
+        </div>}
+        {bulkRun.targets.filter((target) => ["missing", "failed", "stopped"].includes(target.status))
+          .map((target) => <small key={target.race_id}>{target.race_date} {target.racecourse} {target.race_number}R: {target.error_message ?? "取得できませんでした。"}</small>)}
+      </div>}
     </div>
 
     {detailState === "loading" && <p className="message" role="status">レース詳細を読み込んでいます…</p>}
@@ -206,11 +285,11 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
     {loadState === "ready" && page?.weeks.length === 0 && <p className="empty-note">過去の注目馬はまだありません。</p>}
     {loadState === "ready" && page && <nav className="past-pagination" aria-label="過去レースページ">
       <button type="button" disabled={!page.has_newer} onClick={() => {
-        setSelectedDate("all"); setSelectedCourse("all"); setPageNumber((value) => value - 1);
+        setSelectedDate("all"); setSelectedCourse("all"); setBulkRun(null); setPageNumber((value) => value - 1);
       }}>新しい4開催週</button>
       <span>{page.page}ページ目</span>
       <button type="button" disabled={!page.has_older} onClick={() => {
-        setSelectedDate("all"); setSelectedCourse("all"); setPageNumber((value) => value + 1);
+        setSelectedDate("all"); setSelectedCourse("all"); setBulkRun(null); setPageNumber((value) => value + 1);
       }}>古い4開催週</button>
     </nav>}
   </section>;
