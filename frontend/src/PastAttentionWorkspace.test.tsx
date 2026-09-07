@@ -202,3 +202,28 @@ it("bulk-acquires missing results for the displayed meeting weeks and refreshes 
   });
   expect(screen.getByText("1件取得 / 0件未取得 / 0件失敗")).toBeTruthy();
 });
+
+it("explains when bulk acquisition stops after five consecutive failures", async () => {
+  const page = {
+    page: 1, weeks_per_page: 4, total_week_count: 0, has_newer: false, has_older: false, weeks: [],
+  };
+  const stopped = {
+    run_id: 8, page: 1, status: "stopped", started_at: "2026-09-07T03:00:00Z",
+    completed_at: null, target_count: 6, processed_count: 5, succeeded_count: 0, missing_count: 0,
+    failed_count: 5, stop_reason: "consecutive_failures",
+    targets: [],
+  };
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/past-attention?page=1") return Promise.resolve(jsonResponse(page));
+    if (url === "/api/past-attention/result-runs?page=1" && init?.method === "POST") {
+      return Promise.resolve(new Response(JSON.stringify(stopped), { status: 202 }));
+    }
+    return Promise.reject(new Error(`unexpected request: ${url}`));
+  }));
+  render(<PastAttentionWorkspace />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "表示中の未取得結果を一括取得" }));
+
+  expect(await screen.findByText("5件連続で取得に失敗したため停止しました。未処理レースは再試行できます。")).toBeTruthy();
+});

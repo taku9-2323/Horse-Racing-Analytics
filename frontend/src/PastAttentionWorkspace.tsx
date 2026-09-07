@@ -251,7 +251,9 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
         <progress max={Math.max(1, bulkRun.target_count)} value={bulkRun.processed_count} />
         <span>{bulkRun.succeeded_count}件取得 / {bulkRun.missing_count}件未取得 / {bulkRun.failed_count}件失敗</span>
         {bulkRun.status === "stopped" && <div className="bulk-result-fallback">
-          <p>JRAからの取得を停止しました。失敗したレースは保存済み結果を変更していません。</p>
+          <p>{bulkRun.stop_reason === "consecutive_failures"
+            ? "5件連続で取得に失敗したため停止しました。未処理レースは再試行できます。"
+            : "JRAからの取得を停止しました。失敗したレースは保存済み結果を変更していません。"}</p>
           {onNavigate && <button type="button" onClick={() => onNavigate("import")}>個別URL・CSV取込へ</button>}
         </div>}
         {bulkRun.targets.filter((target) => ["missing", "failed", "stopped"].includes(target.status))

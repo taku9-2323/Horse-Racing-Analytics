@@ -86,6 +86,7 @@ class BulkResultAcquisitionService:
         if stored is None:
             return
         _, targets = stored
+        consecutive_failures = 0
         for target in targets:
             if str(target["status"]) != "pending":
                 continue
@@ -99,7 +100,13 @@ class BulkResultAcquisitionService:
                     run_id, race_id, "failed", "source_identity_missing",
                     "保存済みデータからJRA結果ページを特定できません。", self._utc_iso(self._now()),
                 )
-                self._database.refresh_bulk_result_run(run_id)
+                consecutive_failures += 1
+                self._database.refresh_bulk_result_run(
+                    run_id,
+                    stop_reason="consecutive_failures" if consecutive_failures >= 5 else None,
+                )
+                if consecutive_failures >= 5:
+                    return
                 continue
             observation: dict[str, Any] | None = None
             try:
@@ -111,6 +118,7 @@ class BulkResultAcquisitionService:
                 self._database.update_bulk_result_target(
                     run_id, race_id, "succeeded", None, None, self._utc_iso(self._now()),
                 )
+                consecutive_failures = 0
             except AcquisitionError as error:
                 if error.observation is not None:
                     self._database.save_acquisition_failure(error.observation)
@@ -125,10 +133,20 @@ class BulkResultAcquisitionService:
                 )
                 if status == "stopped":
                     return
+                if status == "missing":
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
             except (LookupError, ValueError) as error:
                 self._database.update_bulk_result_target(
                     run_id, race_id, "failed", str(error),
                     "取得した結果を保存済みレースへ登録できません。", self._utc_iso(self._now()),
                 )
-            self._database.refresh_bulk_result_run(run_id)
+                consecutive_failures += 1
+            self._database.refresh_bulk_result_run(
+                run_id,
+                stop_reason="consecutive_failures" if consecutive_failures >= 5 else None,
+            )
+            if consecutive_failures >= 5:
+                return
         self._database.complete_bulk_result_run(run_id, self._utc_iso(self._now()))

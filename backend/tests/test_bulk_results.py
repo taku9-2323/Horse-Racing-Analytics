@@ -226,6 +226,59 @@ def test_temporary_robots_failure_is_failed_and_next_race_is_acquired(tmp_path: 
     assert failed["error_message"] == "JRAの取得可否を確認できませんでした。次のレースへ進みます。"
 
 
+def test_bulk_run_stops_after_five_consecutive_failures(tmp_path: Path) -> None:
+    tasks: list[object] = []
+    database_path = tmp_path / "consecutive-failures.sqlite3"
+    app = create_app(
+        database_path,
+        now_provider=lambda: datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        weekly_task_starter=lambda task: tasks.append(task),
+    )
+    with TestClient(app) as client:
+        for race_number in range(12, 6, -1):
+            seed_missing_attention(database_path, race_number=race_number, with_source=False)
+        started = client.post("/api/past-attention/result-runs", params={"page": 1})
+        task = tasks.pop()
+        assert callable(task)
+        task()
+        stopped = client.get(f"/api/past-attention/result-runs/{started.json()['run_id']}").json()
+
+    assert stopped["status"] == "stopped"
+    assert stopped["stop_reason"] == "consecutive_failures"
+    assert stopped["processed_count"] == 5
+    assert stopped["failed_count"] == 5
+    assert sum(target["status"] == "pending" for target in stopped["targets"]) == 1
+
+
+def test_success_resets_the_consecutive_failure_count(tmp_path: Path) -> None:
+    tasks: list[object] = []
+
+    def fetcher(url: str) -> FetchResponse:
+        if url.endswith("robots.txt"):
+            return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+
+    database_path = tmp_path / "failure-count-reset.sqlite3"
+    app = create_app(
+        database_path, jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        weekly_task_starter=lambda task: tasks.append(task),
+    )
+    with TestClient(app) as client:
+        for race_number in range(12, 3, -1):
+            seed_missing_attention(database_path, race_number=race_number, with_source=race_number == 8)
+        started = client.post("/api/past-attention/result-runs", params={"page": 1})
+        task = tasks.pop()
+        assert callable(task)
+        task()
+        completed = client.get(f"/api/past-attention/result-runs/{started.json()['run_id']}").json()
+
+    assert completed["status"] == "completed"
+    assert completed["processed_count"] == 9
+    assert completed["failed_count"] == 8
+    assert completed["succeeded_count"] == 1
+
+
 def test_unpublished_result_is_counted_as_missing_and_does_not_stop_later_targets(tmp_path: Path) -> None:
     tasks: list[object] = []
 
