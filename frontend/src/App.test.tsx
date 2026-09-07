@@ -35,9 +35,30 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const openArea = (name: "データ取込" | "成績・検証" | "設定・バックアップ") => {
+const openArea = (name: "過去レース" | "データ取込" | "成績・検証" | "設定・バックアップ") => {
   fireEvent.click(screen.getByRole("button", { name }));
 };
+
+it("opens past attention results from the main navigation", async () => {
+  vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "/api/health") return Promise.resolve(healthResponse("ok"));
+    if (url === "/api/races") return Promise.resolve(emptyRaceListResponse());
+    if (url === "/api/acquisition/jra/meeting-weeks/current") {
+      return Promise.resolve(new Response(JSON.stringify({ detail: {} }), { status: 404 }));
+    }
+    if (url === "/api/past-attention?page=1") return Promise.resolve(new Response(JSON.stringify({
+      page: 1, weeks_per_page: 4, total_week_count: 0,
+      has_newer: false, has_older: false, weeks: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
+  }));
+
+  render(<App />);
+  openArea("過去レース");
+  expect(await screen.findByRole("heading", { name: "過去レースの注目馬" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "過去レース", current: "page" })).toBeTruthy();
+});
 
 describe("system status", () => {
   it("keeps health details out of the race workspace and shows them under settings", async () => {

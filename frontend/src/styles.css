@@ -101,7 +101,7 @@ h1 {
   line-height: 1.85;
 }
 
-.primary-nav { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin-bottom: 24px; padding: 6px; border: 1px solid rgba(220, 204, 170, .19); background: rgba(13, 19, 16, .94); backdrop-filter: blur(18px); }
+.primary-nav { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin-bottom: 24px; padding: 6px; border: 1px solid rgba(220, 204, 170, .19); background: rgba(13, 19, 16, .94); backdrop-filter: blur(18px); }
 .primary-nav button { border-color: transparent; color: #b8c2bc; background: transparent; }
 .primary-nav button[aria-current="page"] { border-color: #c6a766; color: #111815; background: #c6a766; }
 
@@ -293,6 +293,39 @@ th { color: #8f9b94; font-weight: 500; }
 .detail-next p { margin: 7px 0 0; color: #8f9b94; font-size: .8rem; }
 .detail-next-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .detail-next-actions button { padding: 7px 10px; font-size: .74rem; }
+.decision-runner.is-selected-horse { outline: 2px solid #f6d788; outline-offset: -2px; }
+.selected-horse-badge { border-radius: 999px; padding: 4px 8px; color: #111815 !important; background: #f6d788; white-space: nowrap; }
+.past-attention-header > p { margin: 0; padding: 18px 28px; color: #aeb8b2; font-size: .82rem; }
+.past-scope-filters, .past-timing-filters, .past-result-filters {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 28px;
+  border-top: 1px solid rgba(220, 204, 170, .1);
+}
+.past-scope-filters label { display: grid; grid-template-columns: auto minmax(8rem, 1fr); align-items: center; gap: 8px; color: #aeb8b2; font-size: .75rem; }
+.past-scope-filters select { min-width: 9rem; }
+.past-timing-filters button, .past-result-filters button, .past-pagination button {
+  border-color: rgba(220, 204, 170, .22); color: #d9dfdb; background: transparent;
+}
+.past-timing-filters button[aria-pressed="true"], .past-result-filters button[aria-pressed="true"] {
+  border-color: #c6a766; color: #111815; background: #c6a766;
+}
+.past-attention-week { margin-top: 18px; }
+.past-attention-week > h3 { margin: 0; padding: 18px 28px; color: #dcccaa; font: 500 1.05rem Georgia, "Yu Mincho", serif; }
+.past-attention-list { margin: 0; padding: 0; border-top: 1px solid rgba(220, 204, 170, .12); list-style: none; }
+.past-attention-list li + li { border-top: 1px solid rgba(220, 204, 170, .08); }
+.past-attention-list li > button {
+  display: grid; grid-template-columns: 9rem minmax(7rem, 1fr) 4rem minmax(0, 9rem);
+  align-items: center; gap: 14px; width: 100%; border: 0; border-left: 5px solid #c6a766;
+  border-radius: 0; padding: 14px 23px; color: #f4f0e8; background: transparent; text-align: left;
+}
+.past-attention-list li > button:hover { background: rgba(255, 255, 255, .04); }
+.past-race, .past-horse { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.past-race time { color: #8f9b94; font-size: .72rem; }
+.past-horse b { color: #c6a766; font-size: 1.05rem; }
+.past-result { color: #f6d788; font-weight: 700; }
+.past-badges { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.past-badges small { border: 1px solid rgba(220, 204, 170, .25); border-radius: 999px; padding: 4px 7px; color: #b9c3bd; white-space: nowrap; }
+.past-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 18px; }
+.past-pagination span { color: #8f9b94; font-size: .76rem; }
 .maintenance-actions a {
   display: inline-flex;
   align-items: center;
@@ -480,6 +513,19 @@ footer {
   .detail-data-state { margin-right: 20px; margin-left: 20px; }
   .decision-runner { padding: 16px 20px; }
   .decision-runner dl { grid-template-columns: repeat(2, 1fr); }
+  .past-attention-header > p, .past-scope-filters, .past-timing-filters, .past-result-filters { padding-right: 20px; padding-left: 20px; }
+  .past-scope-filters { display: grid; }
+  .past-scope-filters label { grid-template-columns: 4rem minmax(0, 1fr); }
+  .past-scope-filters select { min-width: 0; width: 100%; }
+  .past-attention-week > h3 { padding: 16px 20px; }
+  .past-attention-list li > button {
+    grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px 15px;
+  }
+  .past-race { flex-wrap: wrap; }
+  .past-horse { grid-column: 1; }
+  .past-result { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  .past-badges { grid-column: 1 / -1; justify-content: flex-start; }
+  .past-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .backup-list li { align-items: stretch; flex-direction: column; }
 
   .status-card {

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import date, timedelta
 import sqlite3
 import json
 from collections.abc import Sequence
@@ -236,7 +237,7 @@ class SqliteDatabase:
                     result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
                     horse_number INTEGER NOT NULL,
                     finish_position INTEGER,
-                    status TEXT NOT NULL CHECK (status IN ('確定', '取消', '除外')),
+                    status TEXT NOT NULL CHECK (status IN ('確定', '取消', '除外', '競走中止')),
                     win_payout_per_100 INTEGER NOT NULL CHECK (win_payout_per_100 >= 0),
                     place_payout_per_100 INTEGER NOT NULL CHECK (place_payout_per_100 >= 0),
                     PRIMARY KEY (result_version_id, horse_number)
@@ -513,6 +514,26 @@ class SqliteDatabase:
                 UNIQUE (run_id, source_url, response_sha256)
             )""")
             connection.execute("UPDATE application_metadata SET value = '14' WHERE key = 'schema_version'")
+            runner_results_schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runner_results'"
+            ).fetchone()
+            if runner_results_schema is not None and "競走中止" not in str(runner_results_schema[0]):
+                connection.execute("""CREATE TABLE runner_results_v15 (
+                    result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
+                    horse_number INTEGER NOT NULL,
+                    finish_position INTEGER,
+                    status TEXT NOT NULL CHECK (status IN ('確定', '取消', '除外', '競走中止')),
+                    win_payout_per_100 INTEGER NOT NULL CHECK (win_payout_per_100 >= 0),
+                    place_payout_per_100 INTEGER NOT NULL CHECK (place_payout_per_100 >= 0),
+                    PRIMARY KEY (result_version_id, horse_number)
+                )""")
+                connection.execute("""INSERT INTO runner_results_v15
+                    SELECT result_version_id,horse_number,finish_position,status,
+                           win_payout_per_100,place_payout_per_100
+                    FROM runner_results""")
+                connection.execute("DROP TABLE runner_results")
+                connection.execute("ALTER TABLE runner_results_v15 RENAME TO runner_results")
+            connection.execute("UPDATE application_metadata SET value = '15' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -520,7 +541,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("14",):
+        if row != ("15",):
             raise RuntimeError("SQLite schema is not ready")
 
     def start_meeting_week_run(self, week_start: str, week_end: str, started_at: str) -> int:
@@ -797,6 +818,85 @@ class SqliteDatabase:
             runs = connection.execute("SELECT id FROM rule_judgement_runs WHERE race_id=? ORDER BY id", (race_id,)).fetchall()
         return [stored for row in runs if (stored := self.get_rule_judgement(int(row["id"]))) is not None]
 
+    def list_past_attention(
+        self, current_week_start: str, page: int, weeks_per_page: int,
+    ) -> tuple[int, list[str], dict[str, list[dict[str, Any]]]]:
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            race_dates = connection.execute(
+                "SELECT DISTINCT race_date FROM races WHERE race_date<? ORDER BY race_date DESC",
+                (current_week_start,),
+            ).fetchall()
+            week_starts = sorted({
+                (date.fromisoformat(str(row["race_date"]))
+                 - timedelta(days=date.fromisoformat(str(row["race_date"])).weekday())).isoformat()
+                for row in race_dates
+            }, reverse=True)
+            offset = (page - 1) * weeks_per_page
+            selected_weeks = week_starts[offset:offset + weeks_per_page]
+            if not selected_weeks:
+                return len(week_starts), [], {}
+            oldest = selected_weeks[-1]
+            newest_end = (date.fromisoformat(selected_weeks[0]) + timedelta(days=6)).isoformat()
+            rows = connection.execute(
+                """SELECT race.id AS race_id,race.race_date,race.racecourse,race.race_number,
+                    race.start_time,judged.horse_number,judged.horse_name,
+                    judgement.id AS judgement_id,judgement.input_snapshot_id,
+                    judgement.official_pre_race_eligible,
+                    result.version AS result_version,result.supersedes_result_version_id,
+                    runner_result.status AS result_status,runner_result.finish_position
+                FROM races AS race
+                JOIN rule_judgement_runs AS judgement
+                  ON judgement.race_id=race.id AND judgement.status='active'
+                JOIN runner_rule_judgements AS judged
+                  ON judged.judgement_run_id=judgement.id AND judged.judgement='注目'
+                LEFT JOIN result_versions AS result
+                  ON result.race_id=race.id AND result.status='active'
+                LEFT JOIN runner_results AS runner_result
+                  ON runner_result.result_version_id=result.id
+                 AND runner_result.horse_number=judged.horse_number
+                WHERE race.race_date BETWEEN ? AND ?
+                ORDER BY race.race_date DESC,race.start_time DESC,race.racecourse,
+                         race.race_number DESC,judged.horse_number,judgement.id""",
+                (oldest, newest_end),
+            ).fetchall()
+
+        grouped: dict[tuple[int, int], dict[str, Any]] = {}
+        for row in rows:
+            key = int(row["race_id"]), int(row["horse_number"])
+            item = grouped.setdefault(key, {
+                "race_id": key[0], "race_date": str(row["race_date"]),
+                "racecourse": str(row["racecourse"]), "race_number": int(row["race_number"]),
+                "start_time": str(row["start_time"]), "horse_number": key[1],
+                "horse_name": str(row["horse_name"]), "pre_race_attention": False,
+                "post_start_attention": False, "pre_race_snapshot_id": None,
+                "pre_race_judgement_id": None, "post_start_snapshot_id": None,
+                "post_start_judgement_id": None,
+                "result_status": None if row["result_status"] is None else str(row["result_status"]),
+                "finish_position": (
+                    None if row["finish_position"] is None else int(row["finish_position"])
+                ),
+                "has_result_correction": (
+                    row["result_version"] is not None and (
+                        int(row["result_version"]) > 1 or row["supersedes_result_version_id"] is not None
+                    )
+                ),
+            })
+            prefix = "pre_race" if bool(row["official_pre_race_eligible"]) else "post_start"
+            item[f"{prefix}_attention"] = True
+            item[f"{prefix}_snapshot_id"] = int(row["input_snapshot_id"])
+            item[f"{prefix}_judgement_id"] = int(row["judgement_id"])
+
+        horses_by_week: dict[str, list[dict[str, Any]]] = {
+            week_start: [] for week_start in selected_weeks
+        }
+        for item in grouped.values():
+            race_day = date.fromisoformat(str(item["race_date"]))
+            week_start = (race_day - timedelta(days=race_day.weekday())).isoformat()
+            if week_start in horses_by_week:
+                horses_by_week[week_start].append(item)
+        return len(week_starts), selected_weeks, horses_by_week
+
     def register_jra_race_with_odds(
         self, card_id: int, odds: Sequence[dict[str, Any]], observation: dict[str, Any],
         observed_at: str | None,
@@ -892,9 +992,10 @@ class SqliteDatabase:
     def get_acquired_race_card(self, card_id: int) -> sqlite3.Row | None:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
-            return connection.execute(
+            row = connection.execute(
                 "SELECT * FROM acquired_race_cards WHERE id=?", (card_id,),
             ).fetchone()
+            return cast(sqlite3.Row | None, row)
 
     def find_jra_odds_snapshot(
         self, card_id: int, source_url: str, response_sha256: str,

@@ -54,7 +54,7 @@ FIVE_ODDS_HTML = (ODDS_HTML
 </table>""".encode(), 1))
 
 
-def five_runner_result(*, dead_heat: bool = False) -> bytes:
+def five_runner_result(*, dead_heat: bool = False, did_not_finish: bool = False) -> bytes:
     second_position = 1 if dead_heat else 2
     third_position = 3
     win_lines = (
@@ -79,8 +79,8 @@ def five_runner_result(*, dead_heat: bool = False) -> bytes:
 <tr><td class="place">1</td><td class="waku"><img alt="枠1白"></td><td class="num">1</td><td class="horse">アサヒノソラ</td><td class="age">牡3</td><td class="weight">56.0</td></tr>
 <tr><td class="place">{second_position}</td><td class="waku"><img alt="枠2黒"></td><td class="num">2</td><td class="horse">ツキノミチ</td><td class="age">牝4</td><td class="weight">54.0</td></tr>
 <tr><td class="place">{third_position}</td><td class="waku"><img alt="枠3赤"></td><td class="num">3</td><td class="horse">ミナモ</td><td class="age">牡4</td><td class="weight">57.0</td></tr>
-<tr><td class="place">4</td><td class="waku"><img alt="枠4青"></td><td class="num">4</td><td class="horse">ホシカゲ</td><td class="age">牡4</td><td class="weight">57.0</td></tr>
-<tr><td class="place">5</td><td class="waku"><img alt="枠5黄"></td><td class="num">5</td><td class="horse">ヤマナミ</td><td class="age">牡4</td><td class="weight">57.0</td></tr>
+<tr><td class="place">{'中止' if did_not_finish else '4'}</td><td class="waku"><img alt="枠4青"></td><td class="num">4</td><td class="horse">ホシカゲ</td><td class="age">牡4</td><td class="weight">57.0</td></tr>
+<tr><td class="place">{'4' if did_not_finish else '5'}</td><td class="waku"><img alt="枠5黄"></td><td class="num">5</td><td class="horse">ヤマナミ</td><td class="age">牡4</td><td class="weight">57.0</td></tr>
 </tbody></table><div class="refund_area"><h2>払戻金</h2><ul>
 <li class="win"><dl><dt>単勝</dt><dd>{win_lines}</dd></dl></li>
 <li class="place"><dl><dt>複勝</dt><dd>{place_lines}</dd></dl></li>
@@ -147,6 +147,30 @@ def test_user_acquires_jra_result_and_atomically_settles_win_and_refund(tmp_path
     assert [(item["payout_yen"], item["refund_yen"], item["profit_yen"]) for item in ledger.json()["settlements"]] == [
         (840, 0, 640), (0, 300, 0),
     ]
+
+
+def test_jra_result_saves_did_not_finish_without_treating_it_as_a_refund(tmp_path: Path) -> None:
+    fetcher = JraResultFetcher(
+        card_html=five_runner_card(), odds_html=FIVE_ODDS_HTML,
+        result_pages={RESULT_URL: five_runner_result(did_not_finish=True)},
+    )
+    app = create_app(
+        tmp_path / "jra-did-not-finish.sqlite3", jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 8, 23, 8, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        race_id = registered_race(client)
+        client.post(f"/api/races/{race_id}/bets", json={
+            "horse_number": 4, "bet_type": "win", "decision_type": "discretionary", "amount_yen": 100,
+        })
+        acquired = client.post(f"/api/races/{race_id}/results/acquire", json={"url": RESULT_URL})
+        ledger = client.get(f"/api/races/{race_id}/ledger").json()
+
+    assert acquired.status_code == 201, acquired.text
+    assert acquired.json()["result"]["runners"][3]["status"] == "競走中止"
+    assert ledger["settlements"][0]["refund_yen"] == 0
+    assert ledger["settlements"][0]["profit_yen"] == -100
 
 
 def test_jra_dead_heat_correction_preserves_history_differences_and_frozen_prediction(tmp_path: Path) -> None:

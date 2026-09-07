@@ -1,11 +1,39 @@
 from pathlib import Path
+import sqlite3
 
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.database import SqliteDatabase
 
 
 SAMPLE_CSV = (Path(__file__).parents[2] / "examples" / "sample-race.csv").read_bytes()
+
+
+def test_existing_result_schema_is_migrated_for_did_not_finish(tmp_path: Path) -> None:
+    database_path = tmp_path / "migration.sqlite3"
+    database = SqliteDatabase(database_path)
+    database.initialize()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("ALTER TABLE runner_results RENAME TO runner_results_v14")
+        connection.execute("""CREATE TABLE runner_results (
+            result_version_id INTEGER NOT NULL REFERENCES result_versions(id),
+            horse_number INTEGER NOT NULL, finish_position INTEGER,
+            status TEXT NOT NULL CHECK (status IN ('確定', '取消', '除外')),
+            win_payout_per_100 INTEGER NOT NULL CHECK (win_payout_per_100 >= 0),
+            place_payout_per_100 INTEGER NOT NULL CHECK (place_payout_per_100 >= 0),
+            PRIMARY KEY (result_version_id, horse_number))""")
+        connection.execute("DROP TABLE runner_results_v14")
+        connection.execute("UPDATE application_metadata SET value='14' WHERE key='schema_version'")
+
+    database.initialize()
+    database.check()
+    with sqlite3.connect(database_path) as connection:
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='runner_results'"
+        ).fetchone()
+    assert schema is not None
+    assert "競走中止" in str(schema[0])
 
 
 def import_race(client: TestClient) -> dict[str, object]:
@@ -114,6 +142,27 @@ def test_scratched_or_excluded_bet_is_refunded_in_full(tmp_path: Path) -> None:
         "payout_yen": 0, "refund_yen": 500, "profit_yen": 0,
     }
     assert ledger["totals"]["return_rate"] == 1.0
+
+
+def test_did_not_finish_is_saved_without_refunding_the_bet(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "did-not-finish.sqlite3")
+
+    with TestClient(app) as client:
+        race_id = import_race(client)["race_id"]
+        client.post(f"/api/races/{race_id}/bets", json={
+            "horse_number": 4, "bet_type": "win", "decision_type": "discretionary", "amount_yen": 500,
+        })
+        imported = client.post(
+            f"/api/races/{race_id}/results/import",
+            content=results_csv(horse_4_status="競走中止", horse_4_finish=""),
+            headers={"Content-Type": "text/csv"},
+        )
+        ledger = client.get(f"/api/races/{race_id}/ledger").json()
+
+    assert imported.status_code == 201
+    assert imported.json()["runners"][3]["status"] == "競走中止"
+    assert ledger["settlements"][0]["refund_yen"] == 0
+    assert ledger["settlements"][0]["profit_yen"] == -500
 
 
 def test_invalid_result_csv_is_rejected_atomically(tmp_path: Path) -> None:

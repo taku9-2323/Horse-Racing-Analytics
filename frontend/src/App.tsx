@@ -9,6 +9,7 @@ import MarketAttentionPanel from "./MarketAttentionPanel";
 import RuleJudgementPanel from "./RuleJudgementPanel";
 import MarketRuleComparisonPanel from "./MarketRuleComparisonPanel";
 import WeeklyRaceWorkspace from "./WeeklyRaceWorkspace";
+import PastAttentionWorkspace from "./PastAttentionWorkspace";
 
 type HealthStatus = "ok" | "error";
 
@@ -54,7 +55,7 @@ const latestRaceFirst = (items: RaceListItem[]) => [...items].sort(
 );
 
 function App() {
-  const [activeArea, setActiveArea] = useState<"weekly" | "evaluation" | "import" | "settings">("weekly");
+  const [activeArea, setActiveArea] = useState<"weekly" | "past" | "evaluation" | "import" | "settings">("weekly");
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
@@ -175,7 +176,7 @@ function App() {
 
       <nav className="primary-nav" aria-label="主要画面">
         {([
-          ["weekly", "今週のレース"], ["evaluation", "成績・検証"],
+          ["weekly", "今週のレース"], ["past", "過去レース"], ["evaluation", "成績・検証"],
           ["import", "データ取込"], ["settings", "設定・バックアップ"],
         ] as const).map(([area, label]) => <button type="button" key={area}
           aria-current={activeArea === area ? "page" : undefined} onClick={() => setActiveArea(area)}>{label}</button>)}
@@ -232,6 +233,7 @@ function App() {
       </section>}
 
       {activeArea === "weekly" && <WeeklyRaceWorkspace onNavigate={setActiveArea} />}
+      {activeArea === "past" && <PastAttentionWorkspace onNavigate={setActiveArea} />}
 
       {activeArea === "import" && <><JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
 
@@ -370,8 +372,8 @@ function App() {
       {activeArea === "settings" && <DataMaintenancePanel />}
 
       <footer>
-          <span>個人運用MVP / チケット19</span>
-          <span>開催週から注目レースを絞り、固定した判断材料を確認</span>
+          <span>個人運用MVP / チケット20</span>
+          <span>今週の候補選びと、過去の注目馬の結果確認</span>
       </footer>
     </main>
   );

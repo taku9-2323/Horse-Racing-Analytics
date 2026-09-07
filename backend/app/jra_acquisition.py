@@ -756,8 +756,8 @@ def parse_jra_result_page(
                 continue
             horse_number = int(required_text(number_cell))
             place_text = required_text(row.find(tag="td", class_name="place"))
-            if place_text in {"取消", "除外"}:
-                status = place_text
+            if place_text in {"取消", "除外", "中止", "競走中止"}:
+                status = "競走中止" if place_text in {"中止", "競走中止"} else place_text
                 finish_position = None
             else:
                 status = "確定"

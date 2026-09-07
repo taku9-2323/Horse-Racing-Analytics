@@ -52,6 +52,7 @@ from app.meeting_week_acquisition import (
     current_meeting_week, meeting_week_response,
 )
 from app.weekly_race_view import WeeklyRaceDecisionView, weekly_race_decision_view
+from app.past_attention import PastAttentionPage, past_attention_page
 
 
 class ComponentHealth(BaseModel):
@@ -221,6 +222,11 @@ def create_app(
             RaceListItem(race_id=int(race["id"]), race=build_race_summary(race))
             for race in database.list_races()
         ]
+
+    @app.get("/api/past-attention", response_model=PastAttentionPage)
+    def get_past_attention(page: Annotated[int, Query(ge=1)] = 1) -> PastAttentionPage:
+        week_start, _ = current_meeting_week(current_time())
+        return past_attention_page(database, week_start.isoformat(), page)
 
     @app.post("/api/acquisition/jra/race-card", response_model=AcquiredRaceCard, status_code=201)
     def acquire_jra_race_card(request: RaceCardRequest) -> AcquiredRaceCard:

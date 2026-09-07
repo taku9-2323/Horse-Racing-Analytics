@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 BetType = Literal["win", "place"]
 DecisionType = Literal["candidate", "discretionary"]
-RunnerResultStatus = Literal["確定", "取消", "除外"]
+RunnerResultStatus = Literal["確定", "取消", "除外", "競走中止"]
 
 
 class BetCreate(BaseModel):
@@ -118,8 +118,8 @@ def parse_results_csv(content: bytes, *, allow_dead_heat: bool = False) -> list[
     for row_number, row in enumerate(reader, start=2):
         horse_number = _integer(row, row_number, "horse_number", issues)
         status = (row.get("status") or "").strip()
-        if status not in {"確定", "取消", "除外"}:
-            issues.append(_issue(row_number, "status", "invalid_choice", "確定、取消、除外のいずれかを指定してください。"))
+        if status not in {"確定", "取消", "除外", "競走中止"}:
+            issues.append(_issue(row_number, "status", "invalid_choice", "確定、取消、除外、競走中止のいずれかを指定してください。"))
         finish_text = (row.get("finish_position") or "").strip()
         finish_position: int | None = None
         if status == "確定":
@@ -129,16 +129,16 @@ def parse_results_csv(content: bytes, *, allow_dead_heat: bool = False) -> list[
             elif finish_position is not None:
                 seen_finishes.add(finish_position)
         elif finish_text:
-            issues.append(_issue(row_number, "finish_position", "must_be_blank", "取消・除外では着順を空欄にしてください。"))
+            issues.append(_issue(row_number, "finish_position", "must_be_blank", "取消・除外・競走中止では着順を空欄にしてください。"))
         win_payout = _integer(row, row_number, "win_payout_per_100", issues, allow_zero=True)
         place_payout = _integer(row, row_number, "place_payout_per_100", issues, allow_zero=True)
         if horse_number is not None:
             if horse_number in seen_horses:
                 issues.append(_issue(row_number, "horse_number", "duplicate_horse_number", "同じ馬番を複数記載できません。"))
             seen_horses.add(horse_number)
-        if status in {"取消", "除外"} and any(value not in {None, 0} for value in (win_payout, place_payout)):
-            issues.append(_issue(row_number, "status", "refund_cannot_have_payout", "取消・除外の払戻額は0にしてください。"))
-        if horse_number is not None and status in {"確定", "取消", "除外"} and win_payout is not None and place_payout is not None:
+        if status in {"取消", "除外", "競走中止"} and any(value not in {None, 0} for value in (win_payout, place_payout)):
+            issues.append(_issue(row_number, "status", "refund_cannot_have_payout", "取消・除外・競走中止の払戻額は0にしてください。"))
+        if horse_number is not None and status in {"確定", "取消", "除外", "競走中止"} and win_payout is not None and place_payout is not None:
             parsed.append({
                 "horse_number": horse_number, "finish_position": finish_position,
                 "status": status, "win_payout_per_100": win_payout,
