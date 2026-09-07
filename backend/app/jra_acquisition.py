@@ -477,7 +477,18 @@ class JraResultAcquirer:
             cached = None
         if cached is None:
             robots = self._fetcher(ROBOTS_URL)
-            if robots.status != 200 or robots.final_url != ROBOTS_URL or not robots_allows(robots.body, url):
+            if robots.status in {403, 429}:
+                raise audited_error(
+                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                    503, url, robots.body, received_at, RESULT_PARSER_VERSION,
+                )
+            if robots.status != 200 or robots.final_url != ROBOTS_URL:
+                raise audited_error(
+                    "result_access_check_failed",
+                    "JRAの取得可否を確認できませんでした。次のレースへ進みます。",
+                    502, url, robots.body, received_at, RESULT_PARSER_VERSION,
+                )
+            if not robots_allows(robots.body, url):
                 raise audited_error(
                     "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
                     503, url, robots.body, received_at, RESULT_PARSER_VERSION,
@@ -488,7 +499,12 @@ class JraResultAcquirer:
                     "result_not_published", "JRA結果ページはまだ公開されていません。",
                     404, url, response.body, received_at, RESULT_PARSER_VERSION,
                 )
-            if response.status in {403, 429}:
+            if response.status == 403:
+                raise audited_error(
+                    "result_access_forbidden", "このレースのJRA結果ページを取得できませんでした。",
+                    403, url, response.body, received_at, RESULT_PARSER_VERSION,
+                )
+            if response.status == 429:
                 raise audited_error(
                     "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
                     503, url, response.body, received_at, RESULT_PARSER_VERSION,

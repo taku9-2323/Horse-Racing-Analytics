@@ -42,7 +42,7 @@ def seed_missing_attention(
                 VALUES ('JRA','JP','札幌','2026-08-23',11,'15:45','Asia/Tokyo',
                         '2026-08-23T06:45:00Z','芝',1200,'良',2,?,
                         'JRA-20260823-01-02-02-11','2026-08-23T05:00:00Z','test',?,
-                        'valid',1,'active')""", (CARD_URL, "a" * 64)).lastrowid
+                        'valid',1,'active')""", (CARD_URL, f"{race_number:064d}")).lastrowid
             assert card_id is not None
             connection.execute(
                 "INSERT INTO jra_race_registrations (card_id,race_id) VALUES (?,?)", (card_id, race_id),
@@ -154,6 +154,76 @@ def test_bulk_run_stops_on_access_restriction_and_keeps_fallback_reason(tmp_path
     assert stopped.json()["status"] == "stopped"
     assert stopped.json()["stop_reason"] == "acquisition_stopped"
     assert stopped.json()["targets"][0]["status"] == "stopped"
+
+
+def test_forbidden_result_is_failed_and_later_targets_are_processed(tmp_path: Path) -> None:
+    tasks: list[object] = []
+
+    def fetcher(url: str) -> FetchResponse:
+        if url.endswith("robots.txt"):
+            return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        return FetchResponse(403, url, {"content-type": "text/html"}, b"forbidden")
+
+    database_path = tmp_path / "forbidden-race.sqlite3"
+    app = create_app(
+        database_path, jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        weekly_task_starter=lambda task: tasks.append(task),
+    )
+    with TestClient(app) as client:
+        seed_missing_attention(database_path)
+        seed_missing_attention(database_path, race_number=10, with_source=False)
+        started = client.post("/api/past-attention/result-runs", params={"page": 1})
+        task = tasks.pop()
+        assert callable(task)
+        task()
+        completed = client.get(f"/api/past-attention/result-runs/{started.json()['run_id']}").json()
+
+    assert completed["status"] == "completed"
+    assert completed["processed_count"] == 2
+    assert completed["failed_count"] == 2
+    forbidden = next(target for target in completed["targets"] if target["race_number"] == 11)
+    assert forbidden["status"] == "failed"
+    assert forbidden["error_code"] == "result_access_forbidden"
+    assert forbidden["error_message"] == "このレースのJRA結果ページを取得できませんでした。"
+
+
+def test_temporary_robots_failure_is_failed_and_next_race_is_acquired(tmp_path: Path) -> None:
+    tasks: list[object] = []
+    robots_requests = 0
+
+    def fetcher(url: str) -> FetchResponse:
+        nonlocal robots_requests
+        if url.endswith("robots.txt"):
+            robots_requests += 1
+            if robots_requests == 1:
+                return FetchResponse(503, url, {"content-type": "text/plain"}, b"temporary failure")
+            return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+
+    database_path = tmp_path / "temporary-robots.sqlite3"
+    app = create_app(
+        database_path, jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        weekly_task_starter=lambda task: tasks.append(task),
+    )
+    with TestClient(app) as client:
+        seed_missing_attention(database_path)
+        seed_missing_attention(database_path, race_number=10)
+        started = client.post("/api/past-attention/result-runs", params={"page": 1})
+        task = tasks.pop()
+        assert callable(task)
+        task()
+        completed = client.get(f"/api/past-attention/result-runs/{started.json()['run_id']}").json()
+
+    assert completed["status"] == "completed"
+    assert completed["processed_count"] == 2
+    assert completed["failed_count"] == 1
+    assert completed["succeeded_count"] == 1
+    assert robots_requests == 2
+    failed = next(target for target in completed["targets"] if target["status"] == "failed")
+    assert failed["error_code"] == "result_access_check_failed"
+    assert failed["error_message"] == "JRAの取得可否を確認できませんでした。次のレースへ進みます。"
 
 
 def test_unpublished_result_is_counted_as_missing_and_does_not_stop_later_targets(tmp_path: Path) -> None:
