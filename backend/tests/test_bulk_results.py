@@ -1,18 +1,34 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 import sqlite3
 
 from fastapi.testclient import TestClient
+import pytest
 
-from app.bulk_results import result_url_from_source
-from app.jra_acquisition import FetchResponse
+from app.jra_acquisition import AcquisitionError, FetchResponse, JraResultAcquirer
 from app.main import create_app
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RESULT_HTML = (FIXTURES / "jra-race-result.html").read_bytes()
 CARD_URL = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0101202602021120260823/D1"
-RESULT_URL = "https://www.jra.go.jp/JRADB/accessS.html?CNAME=pw01sde0101202602021120260823/D1"
+OFFICIAL_RESULT_URL = "https://www.jra.go.jp/JRADB/accessS.html?CNAME=pw01sde1001202602021120260823/AE"
+CARD_WITH_RESULT_LINK_HTML = f"""<!doctype html><html><head><meta charset="utf-8"></head><body>
+<div id="race_related_link"><ul><li class="result">
+<a href="{OFFICIAL_RESULT_URL.removeprefix('https://www.jra.go.jp')}">レース結果</a>
+</li></ul></div></body></html>""".encode()
+PARAMETER_ERROR_HTML = b"<!doctype html><html><head><meta charset='utf-8'></head><body>parameter error</body></html>"
+
+
+def successful_result_flow(url: str) -> FetchResponse:
+    if url.endswith("robots.txt"):
+        return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+    if url == CARD_URL:
+        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, CARD_WITH_RESULT_LINK_HTML)
+    if url == OFFICIAL_RESULT_URL:
+        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+    raise AssertionError(f"unexpected JRA URL: {url}")
 
 
 def seed_missing_attention(
@@ -61,17 +77,19 @@ def seed_missing_attention(
             VALUES (?,1,'アサヒノソラ','注目','[]','[]','[]')""", (judgement_id,))
 
 
-def test_result_url_is_derived_from_saved_jra_race_identity() -> None:
-    assert result_url_from_source(CARD_URL) == RESULT_URL
-
-
 def test_bulk_run_acquires_only_missing_attention_results(tmp_path: Path) -> None:
     tasks: list[object] = []
+    fetched_urls: list[str] = []
 
     def fetcher(url: str) -> FetchResponse:
+        fetched_urls.append(url)
         if url == "https://www.jra.go.jp/robots.txt":
             return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
-        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+        if url == CARD_URL:
+            return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, CARD_WITH_RESULT_LINK_HTML)
+        if url == OFFICIAL_RESULT_URL:
+            return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, PARAMETER_ERROR_HTML)
 
     database_path = tmp_path / "bulk.sqlite3"
     app = create_app(
@@ -96,15 +114,88 @@ def test_bulk_run_acquires_only_missing_attention_results(tmp_path: Path) -> Non
     assert completed.json()["processed_count"] == 1
     assert completed.json()["succeeded_count"] == 1
     assert page.json()["weeks"][0]["horses"][0]["finish_position"] == 1
+    assert CARD_URL in fetched_urls
+    assert OFFICIAL_RESULT_URL in fetched_urls
+    with sqlite3.connect(database_path) as connection:
+        link_observation = connection.execute("""SELECT link_source_url,resolved_result_url,
+            link_received_at,link_parser_version,link_response_sha256,link_validation_status
+            FROM jra_result_observations ORDER BY id DESC LIMIT 1""").fetchone()
+    assert link_observation == (
+        CARD_URL, OFFICIAL_RESULT_URL, "2026-09-07T03:00:00Z", "jra-result-link/1",
+        sha256(CARD_WITH_RESULT_LINK_HTML).hexdigest(), "valid",
+    )
+
+
+def test_result_acquirer_caches_the_validated_race_card_page() -> None:
+    fetched_urls: list[str] = []
+
+    def fetcher(url: str) -> FetchResponse:
+        fetched_urls.append(url)
+        return successful_result_flow(url)
+
+    acquirer = JraResultAcquirer(fetcher)
+    received_at = datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc)
+    acquirer.acquire_from_race_card(CARD_URL, received_at)
+    acquirer.acquire_from_race_card(CARD_URL, received_at + timedelta(minutes=1))
+
+    assert fetched_urls.count(CARD_URL) == 1
+
+
+def test_result_link_audit_is_kept_when_robots_disallows_the_resolved_url() -> None:
+    def fetcher(url: str) -> FetchResponse:
+        if url.endswith("robots.txt"):
+            robots = b"User-agent: *\nDisallow: /JRADB/accessS.html\n"
+            return FetchResponse(200, url, {"content-type": "text/plain"}, robots)
+        if url == CARD_URL:
+            return FetchResponse(
+                200, url, {"content-type": "text/html; charset=utf-8"},
+                CARD_WITH_RESULT_LINK_HTML,
+            )
+        raise AssertionError(f"unexpected JRA URL: {url}")
+
+    received_at = datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc)
+    with pytest.raises(AcquisitionError) as caught:
+        JraResultAcquirer(fetcher).acquire_from_race_card(CARD_URL, received_at)
+
+    assert caught.value.code == "acquisition_stopped"
+    assert caught.value.observation is not None
+    assert caught.value.observation["link_source_url"] == CARD_URL
+    assert caught.value.observation["resolved_result_url"] == OFFICIAL_RESULT_URL
+    assert caught.value.observation["link_validation_status"] == "valid"
+
+
+def test_missing_saved_race_card_is_failed_not_unpublished(tmp_path: Path) -> None:
+    tasks: list[object] = []
+
+    def fetcher(url: str) -> FetchResponse:
+        if url.endswith("robots.txt"):
+            return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        return FetchResponse(404, url, {"content-type": "text/html"}, b"not found")
+
+    database_path = tmp_path / "missing-card.sqlite3"
+    app = create_app(
+        database_path, jra_fetcher=fetcher,
+        now_provider=lambda: datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        weekly_task_starter=lambda task: tasks.append(task),
+    )
+    with TestClient(app) as client:
+        seed_missing_attention(database_path)
+        started = client.post("/api/past-attention/result-runs", params={"page": 1})
+        task = tasks.pop()
+        assert callable(task)
+        task()
+        completed = client.get(f"/api/past-attention/result-runs/{started.json()['run_id']}").json()
+
+    assert completed["failed_count"] == 1
+    assert completed["missing_count"] == 0
+    assert completed["targets"][0]["error_code"] == "result_link_fetch_failed"
 
 
 def test_bulk_run_keeps_partial_success_and_retries_only_the_failure(tmp_path: Path) -> None:
     tasks: list[object] = []
 
     def fetcher(url: str) -> FetchResponse:
-        body = b"User-agent: *\nDisallow:\n" if url.endswith("robots.txt") else RESULT_HTML
-        content_type = "text/plain" if url.endswith("robots.txt") else "text/html; charset=utf-8"
-        return FetchResponse(200, url, {"content-type": content_type}, body)
+        return successful_result_flow(url)
 
     database_path = tmp_path / "partial.sqlite3"
     app = create_app(
@@ -162,6 +253,8 @@ def test_forbidden_result_is_failed_and_later_targets_are_processed(tmp_path: Pa
     def fetcher(url: str) -> FetchResponse:
         if url.endswith("robots.txt"):
             return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        if url == CARD_URL:
+            return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, CARD_WITH_RESULT_LINK_HTML)
         return FetchResponse(403, url, {"content-type": "text/html"}, b"forbidden")
 
     database_path = tmp_path / "forbidden-race.sqlite3"
@@ -186,6 +279,14 @@ def test_forbidden_result_is_failed_and_later_targets_are_processed(tmp_path: Pa
     assert forbidden["status"] == "failed"
     assert forbidden["error_code"] == "result_access_forbidden"
     assert forbidden["error_message"] == "このレースのJRA結果ページを取得できませんでした。"
+    with sqlite3.connect(database_path) as connection:
+        failure_observation = connection.execute("""SELECT link_source_url,resolved_result_url,
+            link_parser_version,link_response_sha256,link_validation_status
+            FROM acquisition_failures ORDER BY id DESC LIMIT 1""").fetchone()
+    assert failure_observation == (
+        CARD_URL, OFFICIAL_RESULT_URL, "jra-result-link/1",
+        sha256(CARD_WITH_RESULT_LINK_HTML).hexdigest(), "valid",
+    )
 
 
 def test_temporary_robots_failure_is_failed_and_next_race_is_acquired(tmp_path: Path) -> None:
@@ -199,6 +300,8 @@ def test_temporary_robots_failure_is_failed_and_next_race_is_acquired(tmp_path: 
             if robots_requests == 1:
                 return FetchResponse(503, url, {"content-type": "text/plain"}, b"temporary failure")
             return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        if url == CARD_URL:
+            return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, CARD_WITH_RESULT_LINK_HTML)
         return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
 
     database_path = tmp_path / "temporary-robots.sqlite3"
@@ -254,9 +357,7 @@ def test_success_resets_the_consecutive_failure_count(tmp_path: Path) -> None:
     tasks: list[object] = []
 
     def fetcher(url: str) -> FetchResponse:
-        if url.endswith("robots.txt"):
-            return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
-        return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, RESULT_HTML)
+        return successful_result_flow(url)
 
     database_path = tmp_path / "failure-count-reset.sqlite3"
     app = create_app(
@@ -285,6 +386,8 @@ def test_unpublished_result_is_counted_as_missing_and_does_not_stop_later_target
     def fetcher(url: str) -> FetchResponse:
         if url.endswith("robots.txt"):
             return FetchResponse(200, url, {"content-type": "text/plain"}, b"User-agent: *\nDisallow:\n")
+        if url == CARD_URL:
+            return FetchResponse(200, url, {"content-type": "text/html; charset=utf-8"}, CARD_WITH_RESULT_LINK_HTML)
         return FetchResponse(404, url, {"content-type": "text/html"}, b"not published")
 
     database_path = tmp_path / "missing.sqlite3"

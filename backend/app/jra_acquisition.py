@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.robotparser import RobotFileParser
@@ -20,6 +20,7 @@ ROBOTS_URL = f"https://{ALLOWED_HOST}/robots.txt"
 PARSER_VERSION = "jra-race-entry/2"
 ODDS_PARSER_VERSION = "jra-odds/3"
 RESULT_PARSER_VERSION = "jra-result/1"
+RESULT_LINK_PARSER_VERSION = "jra-result-link/1"
 USER_AGENT = "HorseRacingAnalyticsLocalPrototype/0.1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 SOURCE_RACE_ID_PATTERN = re.compile(
@@ -43,6 +44,13 @@ class FetchResponse:
     final_url: str
     headers: dict[str, str]
     body: bytes
+
+
+@dataclass(frozen=True)
+class _CachedPage:
+    received_at: datetime
+    body: bytes
+    content_type: str
 
 
 class AcquisitionError(Exception):
@@ -467,32 +475,137 @@ class JraOddsAcquirer:
 class JraResultAcquirer:
     def __init__(self, fetcher: Callable[[str], FetchResponse]) -> None:
         self._fetcher = fetcher
-        self._memory_cache: dict[str, tuple[datetime, bytes, str]] = {}
+        self._result_cache: dict[str, _CachedPage] = {}
+        self._race_card_cache: dict[str, _CachedPage] = {}
 
     def acquire(self, url: str, received_at: datetime) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         validate_result_url(url)
-        cached = self._memory_cache.get(url)
-        if cached is not None and received_at - cached[0] > timedelta(minutes=15):
-            del self._memory_cache[url]
-            cached = None
+        self._allowed_robots_body(url, received_at)
+        return self._acquire_result(url, received_at)
+
+    def acquire_from_race_card(
+        self, source_url: str, received_at: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        validate_race_card_url(source_url)
+        if parse_source_race_identity(source_url)["resource"] != "race_card":
+            raise AcquisitionError("url_not_allowed", "許可されたJRA出馬表URLを指定してください。", 422)
+        robots_body = self._allowed_robots_body(source_url, received_at)
+        cached = self._fresh_cached_page(self._race_card_cache, source_url, received_at)
         if cached is None:
-            robots = self._fetcher(ROBOTS_URL)
-            if robots.status in {403, 429}:
+            response = self._fetcher(source_url)
+            if response.status == 404:
+                raise audited_error(
+                    "result_link_fetch_failed", "保存済みのJRA出馬表ページを取得できませんでした。",
+                    404, source_url, response.body, received_at, RESULT_LINK_PARSER_VERSION,
+                )
+            if response.status == 403:
+                raise audited_error(
+                    "result_access_forbidden", "このレースのJRA出馬表ページを取得できませんでした。",
+                    403, source_url, response.body, received_at, RESULT_LINK_PARSER_VERSION,
+                )
+            if response.status == 429:
                 raise audited_error(
                     "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
-                    503, url, robots.body, received_at, RESULT_PARSER_VERSION,
+                    503, source_url, response.body, received_at, RESULT_LINK_PARSER_VERSION,
                 )
-            if robots.status != 200 or robots.final_url != ROBOTS_URL:
+            if (response.status != 200 or not same_allowed_race_card_url(response.final_url, source_url)
+                    or not response.headers.get("content-type", "").lower().startswith("text/html")
+                    or len(response.body) > MAX_RESPONSE_BYTES):
                 raise audited_error(
-                    "result_access_check_failed",
-                    "JRAの取得可否を確認できませんでした。次のレースへ進みます。",
-                    502, url, robots.body, received_at, RESULT_PARSER_VERSION,
+                    "result_link_fetch_failed", "JRA出馬表から結果ページを確認できませんでした。",
+                    502, source_url, response.body, received_at, RESULT_LINK_PARSER_VERSION,
                 )
-            if not robots_allows(robots.body, url):
-                raise audited_error(
-                    "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
-                    503, url, robots.body, received_at, RESULT_PARSER_VERSION,
-                )
+            race_card_received_at = received_at
+            race_card_body = response.body
+            race_card_content_type = response.headers.get("content-type", "")
+            self._race_card_cache[source_url] = _CachedPage(
+                race_card_received_at, race_card_body, race_card_content_type,
+            )
+        else:
+            race_card_received_at = cached.received_at
+            race_card_body = cached.body
+            race_card_content_type = cached.content_type
+        try:
+            result_url = result_url_from_race_card_page(
+                race_card_body, race_card_content_type, source_url,
+            )
+        except AcquisitionError as error:
+            error.observation = {
+                "url": source_url,
+                "received_at": race_card_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "parser_version": RESULT_LINK_PARSER_VERSION,
+                "response_sha256": sha256(race_card_body).hexdigest(),
+                "validation_status": "invalid", "error_code": error.code,
+            }
+            raise
+        link_observation = {
+            "link_source_url": source_url,
+            "link_received_at": race_card_received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "link_parser_version": RESULT_LINK_PARSER_VERSION,
+            "link_response_sha256": sha256(race_card_body).hexdigest(),
+            "resolved_result_url": result_url,
+            "link_validation_status": "valid",
+        }
+        if not robots_allows(robots_body, result_url):
+            rejection = audited_error(
+                "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                503, result_url, robots_body, received_at, RESULT_PARSER_VERSION,
+            )
+            assert rejection.observation is not None
+            rejection.observation.update(link_observation)
+            raise rejection
+        try:
+            results, observation = self._acquire_result(result_url, received_at)
+        except AcquisitionError as error:
+            if error.observation is None:
+                error.observation = {
+                    "url": result_url,
+                    "received_at": received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "parser_version": RESULT_PARSER_VERSION,
+                    "response_sha256": sha256(b"").hexdigest(),
+                    "validation_status": "invalid", "error_code": error.code,
+                }
+            error.observation.update(link_observation)
+            raise
+        observation.update(link_observation)
+        return results, observation
+
+    @staticmethod
+    def _fresh_cached_page(
+        cache: dict[str, _CachedPage], url: str, received_at: datetime,
+    ) -> _CachedPage | None:
+        cached = cache.get(url)
+        if cached is not None and received_at - cached.received_at > timedelta(minutes=15):
+            del cache[url]
+            return None
+        return cached
+
+    def _allowed_robots_body(self, url: str, received_at: datetime) -> bytes:
+        robots = self._fetcher(ROBOTS_URL)
+        if robots.status in {403, 429}:
+            raise audited_error(
+                "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                503, url, robots.body, received_at, RESULT_PARSER_VERSION,
+            )
+        if robots.status != 200 or robots.final_url != ROBOTS_URL:
+            raise audited_error(
+                "result_access_check_failed",
+                "JRAの取得可否を確認できませんでした。次のレースへ進みます。",
+                502, url, robots.body, received_at, RESULT_PARSER_VERSION,
+            )
+        if not robots_allows(robots.body, url):
+            raise audited_error(
+                "acquisition_stopped", "JRAからの取得を停止しました。CSV取込を使用してください。",
+                503, url, robots.body, received_at, RESULT_PARSER_VERSION,
+            )
+        return robots.body
+
+    def _acquire_result(
+        self, url: str, received_at: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        validate_result_url(url)
+        cached = self._fresh_cached_page(self._result_cache, url, received_at)
+        if cached is None:
             response = self._fetcher(url)
             if response.status == 404:
                 raise audited_error(
@@ -519,9 +632,11 @@ class JraResultAcquirer:
             body = response.body
             content_type = response.headers.get("content-type", "")
             response_received_at = received_at
-            self._memory_cache[url] = (response_received_at, body, content_type)
+            self._result_cache[url] = _CachedPage(response_received_at, body, content_type)
         else:
-            response_received_at, body, content_type = cached
+            response_received_at = cached.received_at
+            body = cached.body
+            content_type = cached.content_type
         digest = sha256(body).hexdigest()
         try:
             results, source_updated_at = parse_jra_result_page(body, content_type, url)
@@ -568,6 +683,43 @@ def validate_result_url(url: str) -> None:
         raise AcquisitionError("url_not_allowed", "許可されたJRA結果ページURLを指定してください。", 422) from error
     if identity["resource"] != "result":
         raise AcquisitionError("url_not_allowed", "許可されたJRA結果ページURLを指定してください。", 422)
+
+
+def result_url_from_race_card_page(body: bytes, content_type: str, source_url: str) -> str:
+    validate_race_card_url(source_url)
+    source_identity = parse_source_race_identity(source_url)
+    if source_identity["resource"] != "race_card":
+        raise AcquisitionError("url_not_allowed", "許可されたJRA出馬表URLを指定してください。", 422)
+    try:
+        text = decode_html(body, content_type)
+    except (LookupError, UnicodeDecodeError) as error:
+        raise AcquisitionError(
+            "result_link_validation_failed", "JRA結果ページへのリンクを検証できませんでした。", 422,
+        ) from error
+    parser = _TreeParser()
+    parser.feed(text)
+    related = parser.root.find(element_id="race_related_link")
+    candidates = [] if related is None else [
+        link.attrs.get("href", "") for link in related.find_all(tag="a")
+        if "レース結果" in link.text() and link.attrs.get("href")
+    ]
+    if not candidates:
+        raise AcquisitionError(
+            "result_not_published", "JRA結果ページへのリンクはまだ公開されていません。", 404,
+        )
+    result_url = urljoin(source_url, candidates[0])
+    try:
+        validate_result_url(result_url)
+        result_identity = parse_source_race_identity(result_url)
+    except (AcquisitionError, ValueError) as error:
+        raise AcquisitionError(
+            "result_link_validation_failed", "JRA結果ページへのリンクを検証できませんでした。", 422,
+        ) from error
+    if result_identity["source_race_id"] != source_identity["source_race_id"]:
+        raise AcquisitionError(
+            "result_link_validation_failed", "JRA結果ページへのリンクを検証できませんでした。", 422,
+        )
+    return result_url
 
 
 def same_allowed_race_card_url(left: str, right: str) -> bool:

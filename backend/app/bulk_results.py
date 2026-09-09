@@ -1,12 +1,11 @@
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal, cast
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from pydantic import BaseModel
 
 from app.database import SqliteDatabase
-from app.jra_acquisition import AcquisitionError, JraResultAcquirer, parse_source_race_identity
+from app.jra_acquisition import AcquisitionError, JraResultAcquirer
 
 
 class BulkResultTarget(BaseModel):
@@ -32,19 +31,6 @@ class BulkResultRun(BaseModel):
     failed_count: int
     stop_reason: str | None
     targets: list[BulkResultTarget]
-
-
-def result_url_from_source(source_url: str) -> str:
-    identity = parse_source_race_identity(source_url)
-    parsed = urlparse(source_url)
-    cname = parse_qs(parsed.query, strict_parsing=True)["CNAME"][0]
-    if identity["resource"] == "result":
-        result_cname = cname
-    else:
-        result_cname = cname.replace("dde", "sde", 1)
-    return urlunparse(parsed._replace(
-        path="/JRADB/accessS.html", query=urlencode({"CNAME": result_cname}, safe="/"),
-    ))
 
 
 def bulk_result_response(database: SqliteDatabase, run_id: int) -> BulkResultRun | None:
@@ -110,8 +96,9 @@ class BulkResultAcquisitionService:
                 continue
             observation: dict[str, Any] | None = None
             try:
-                result_url = result_url_from_source(str(source_url))
-                results, observation = self._acquirer.acquire(result_url, self._now())
+                results, observation = self._acquirer.acquire_from_race_card(
+                    str(source_url), self._now(),
+                )
                 self._database.create_result_version(
                     race_id, results, self._utc_iso(self._now()), source_observation=observation,
                 )

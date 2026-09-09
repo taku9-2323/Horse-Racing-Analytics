@@ -588,6 +588,37 @@ class SqliteDatabase:
             connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_running_bulk_result
                 ON bulk_result_runs(status) WHERE status='running'""")
             connection.execute("UPDATE application_metadata SET value = '17' WHERE key = 'schema_version'")
+            result_observation_columns = {
+                str(row[1]) for row in connection.execute(
+                    "PRAGMA table_info(jra_result_observations)"
+                ).fetchall()
+            }
+            for definition in (
+                "link_source_url TEXT", "resolved_result_url TEXT", "link_received_at TEXT",
+                "link_parser_version TEXT", "link_response_sha256 TEXT",
+                "link_validation_status TEXT",
+            ):
+                column_name = definition.split()[0]
+                if column_name not in result_observation_columns:
+                    connection.execute(
+                        f"ALTER TABLE jra_result_observations ADD COLUMN {definition}"
+                    )
+            failure_columns = {
+                str(row[1]) for row in connection.execute(
+                    "PRAGMA table_info(acquisition_failures)"
+                ).fetchall()
+            }
+            for definition in (
+                "link_source_url TEXT", "resolved_result_url TEXT", "link_received_at TEXT",
+                "link_parser_version TEXT", "link_response_sha256 TEXT",
+                "link_validation_status TEXT",
+            ):
+                column_name = definition.split()[0]
+                if column_name not in failure_columns:
+                    connection.execute(
+                        f"ALTER TABLE acquisition_failures ADD COLUMN {definition}"
+                    )
+            connection.execute("UPDATE application_metadata SET value = '18' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -595,7 +626,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("17",):
+        if row != ("18",):
             raise RuntimeError("SQLite schema is not ready")
 
     def has_running_bulk_result(self) -> bool:
@@ -1251,11 +1282,20 @@ class SqliteDatabase:
         with sqlite3.connect(self._path) as connection:
             connection.execute(
                 """INSERT INTO acquisition_failures
-                (source_url, received_at, parser_version, response_sha256, validation_status, error_code)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                tuple(observation[key] for key in (
-                    "url", "received_at", "parser_version", "response_sha256", "validation_status", "error_code",
-                )),
+                (source_url, received_at, parser_version, response_sha256, validation_status,
+                 error_code, link_source_url, resolved_result_url, link_received_at,
+                 link_parser_version, link_response_sha256, link_validation_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    *(observation[key] for key in (
+                        "url", "received_at", "parser_version", "response_sha256",
+                        "validation_status", "error_code",
+                    )),
+                    observation.get("link_source_url"), observation.get("resolved_result_url"),
+                    observation.get("link_received_at"), observation.get("link_parser_version"),
+                    observation.get("link_response_sha256"),
+                    observation.get("link_validation_status"),
+                ),
             )
 
     def list_acquisition_failures(self) -> list[sqlite3.Row]:
@@ -2119,13 +2159,18 @@ class SqliteDatabase:
         connection.execute(
             """INSERT INTO jra_result_observations (
                 result_version_id, source_url, source_race_id, received_at, source_updated_at,
-                parser_version, response_sha256, validation_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                parser_version, response_sha256, validation_status, link_source_url,
+                resolved_result_url, link_received_at, link_parser_version, link_response_sha256,
+                link_validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result_version_id, observation["url"], observation["source_race_id"],
                 observation["received_at"], observation["source_updated_at"],
                 observation["parser_version"], observation["response_sha256"],
-                observation["validation_status"],
+                observation["validation_status"], observation.get("link_source_url"),
+                observation.get("resolved_result_url"), observation.get("link_received_at"),
+                observation.get("link_parser_version"), observation.get("link_response_sha256"),
+                observation.get("link_validation_status"),
             ),
         )
 
