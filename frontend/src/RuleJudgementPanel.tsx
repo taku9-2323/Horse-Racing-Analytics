@@ -1,3 +1,4 @@
+import { formatJst } from "./JstTimestamp";
 import { useState } from "react";
 
 type Rule = { id: number; title: string; version: number };
@@ -44,7 +45,7 @@ export default function RuleJudgementPanel({ raceId }: { raceId: number }) {
     {rules.length === 0 && <button type="button" onClick={() => void open()}>ルール判定を開く</button>}
     {rules.length > 0 && <div className="snapshot-form">
       <label>ルール版 <select value={ruleId ?? ""} onChange={(event) => setRuleId(Number(event.target.value))}>{rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.title} v{rule.version}</option>)}</select></label>
-      <label>入力時点 <select value={snapshotId ?? ""} onChange={(event) => setSnapshotId(Number(event.target.value))}>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>#{snapshot.id} / {snapshot.observed_at ?? "観測時刻不明"}</option>)}</select></label>
+      <label>入力時点 <select value={snapshotId ?? ""} onChange={(event) => setSnapshotId(Number(event.target.value))}>{snapshots.map((snapshot) => <option title={snapshot.observed_at ?? undefined} key={snapshot.id} value={snapshot.id}>#{snapshot.id} / {formatJst(snapshot.observed_at, "観測時刻不明")}</option>)}</select></label>
       <button type="button" disabled={snapshotId === null} onClick={() => void freeze()}>この時点で判定を固定</button>
     </div>}
     {message && <p role="status">{message}</p>}

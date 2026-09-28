@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 
@@ -29,6 +29,8 @@ const withMeetingWeekFallback = (fetcher: FetchLike) => vi.fn(
     }))
     : fetcher(input, init),
 );
+
+beforeEach(() => { window.history.replaceState(null, "", "/"); });
 
 afterEach(() => {
   cleanup();
@@ -174,7 +176,7 @@ describe("race analysis", () => {
 
     expect(await screen.findByRole("heading", { name: "札幌 11R" })).toBeTruthy();
     expect(screen.getByText("単勝市場投票シェア")).toBeTruthy();
-    expect(await screen.findByText("時点 #9 / 観測 不明")).toBeTruthy();
+    expect(await screen.findByText("観測時刻不明")).toBeTruthy();
     expect(screen.getByText("市場基準は独立した予測確率ではないため、候補を生成しません。")).toBeTruthy();
     const raceButtons = within(screen.getByRole("region", { name: "登録済みレース" })).getAllByRole("button");
     expect(raceButtons.map((button) => button.textContent)).toEqual([
@@ -325,12 +327,12 @@ describe("prediction freezing", () => {
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
     await screen.findByRole("heading", { name: "東京 11R" });
-    expect(await screen.findByText("時点 #9 / 観測 2026-08-30T04:45:00Z")).toBeTruthy();
+    expect(await screen.findByText("2026/08/30 13:45 JST")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("1番 単勝オッズ"), { target: { value: "2.4" } });
     fireEvent.change(screen.getByLabelText("オッズ観測時刻"), { target: { value: "2026-08-30T13:55" } });
     fireEvent.click(screen.getByRole("button", { name: "オッズ時点を保存" }));
-    expect(await screen.findByText("時点 #10 / 観測 2026-08-30T04:55:00Z")).toBeTruthy();
+    expect(await screen.findByText("2026/08/30 13:55 JST")).toBeTruthy();
     expect(screen.getByText("1番 単勝2.4 / 複勝1.2–1.5")).toBeTruthy();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
     const snapshotRequest = fetchMock.mock.calls[5][1] as RequestInit;

@@ -1,9 +1,11 @@
+import { useDecisionRoute } from "./useDecisionRoute";
+import { useViewState } from "./ViewState";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import MeetingWeekAcquisitionPanel, {
   type MeetingWeekRace, type MeetingWeekSummary,
 } from "./MeetingWeekAcquisitionPanel";
-import RaceDecisionDetail, { type DecisionView } from "./RaceDecisionDetail";
+import RaceDecisionDetail from "./RaceDecisionDetail";
 
 type Filter = "all" | "attention" | "waiting";
 
@@ -27,26 +29,32 @@ const dateLabel = (value: string) => {
     .format(new Date(`${value}T12:00:00+09:00`));
   return `${month}月${day}日（${weekday}）`;
 };
-type Props = { onNavigate?: (area: "evaluation" | "import" | "settings") => void };
+export function selectMeetingDate(races: MeetingWeekRace[], current: string | null, now = new Date()): string | null {
+  const dates = [...new Set(races.map((race) => race.race_date))].sort();
+  if (current && dates.includes(current)) return current;
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  if (dates.includes(today)) return today;
+  return dates.find((date) => date > today && races.some((race) => race.race_date === date && !race.has_started))
+    ?? dates.at(-1) ?? null;
+}
+
+type Props = { onNavigate?: (area: "evaluation" | "import" | "settings", raceId?: number) => void };
 
 export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
+  const [summaryLoaded, setSummaryLoaded] = useState(false);
   const [summary, setSummary] = useState<MeetingWeekSummary | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [course, setCourse] = useState("all");
-  const [filter, setFilter] = useState<Filter>("all");
-  const [showCompleted, setShowCompleted] = useState(false);
-  const [detail, setDetail] = useState<DecisionView | null>(null);
-  const [detailSource, setDetailSource] = useState<MeetingWeekRace | null>(null);
-  const [detailState, setDetailState] = useState<"idle" | "loading" | "error">("idle");
-  const [detailMessage, setDetailMessage] = useState("");
+  const [selectedDate, setSelectedDate] = useViewState<string | null>("weeklyDate", null);
+  const [course, setCourse] = useViewState<string>("weeklyCourse", "all");
+  const [filter, setFilter] = useViewState<Filter>("weeklyFilter", "all");
+  const [showCompleted, setShowCompleted] = useViewState<boolean>("weeklyCompleted", false);
+  const { detail, state: detailState, setReference } = useDecisionRoute("weekly");
+
   const listScroll = useRef(0);
 
   const receiveSummary = useCallback((loaded: MeetingWeekSummary | null) => {
     setSummary(loaded);
-    if (loaded?.races.length) {
-      setSelectedDate((current) => current && loaded.races.some((race) => race.race_date === current)
-        ? current : [...new Set(loaded.races.map((race) => race.race_date))].sort()[0]);
-    }
+    setSummaryLoaded(true);
+    setSelectedDate((current) => current ?? selectMeetingDate(loaded?.races ?? [], null), true);
   }, []);
 
   const dates = useMemo(() => [...new Set(summary?.races.map((race) => race.race_date) ?? [])].sort(), [summary]);
@@ -63,34 +71,22 @@ export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
       || left.racecourse.localeCompare(right.racecourse) || left.race_number - right.race_number),
   [summary, selectedDate, course, showCompleted, filter]);
 
+  const selectedRaces = (summary?.races ?? []).filter((race) => race.race_date === selectedDate);
+  const allStartedHidden = !showCompleted && selectedRaces.length > 0 && selectedRaces.every((race) => race.has_started);
+
   const openDetail = async (race: MeetingWeekRace) => {
     if (race.race_id === null || race.snapshot_id === null || race.judgement_id === null) return;
     listScroll.current = window.scrollY;
-    setDetailState("loading");
-    setDetailMessage("");
-    try {
-      const query = new URLSearchParams({
-        snapshot_id: String(race.snapshot_id), judgement_id: String(race.judgement_id),
-      });
-      const response = await fetch(`/api/races/${race.race_id}/weekly-decision-view?${query}`);
-      if (!response.ok) throw new Error("レース詳細を読み込めませんでした。");
-      setDetail(await response.json() as DecisionView);
-      setDetailSource(race);
-      setDetailState("idle");
-      window.scrollTo({ top: 0 });
-    } catch (error) {
-      setDetailMessage(error instanceof Error ? error.message : "レース詳細を読み込めませんでした。");
-      setDetailState("error");
-    }
+    setReference(`${race.race_id},${race.snapshot_id},${race.judgement_id}`);
+    window.scrollTo({ top: 0 });
   };
-
   const back = () => {
-    setDetail(null);
-    setDetailState("idle");
+    setReference(null);
     window.setTimeout(() => window.scrollTo({ top: listScroll.current }), 0);
   };
 
   if (detail) {
+    const detailSource = summary?.races.find((race) => race.race_id === detail.race_id && race.snapshot_id === detail.snapshot_id && race.judgement_id === detail.judgement_id);
     const dataState = `${detailSource ? acquisitionLabels[detailSource.state] : "判定済み"}${detailSource?.has_started ? " / 発走後" : ""}`;
     return <RaceDecisionDetail detail={detail} dataState={dataState}
       backLabel="レース一覧へ戻る" onBack={back} onNavigate={onNavigate} />;
@@ -100,7 +96,9 @@ export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
     <MeetingWeekAcquisitionPanel onSummaryChange={receiveSummary}
       onNavigateToImport={() => onNavigate?.("import")} showRaceList={false} />
     {detailState === "loading" && <p role="status" className="message">レース詳細を読み込んでいます…</p>}
-    {detailState === "error" && <p role="alert" className="message error">{detailMessage}</p>}
+    {detailState === "error" && <div role="alert" className="message error">指定されたレース・固定時点が見つからないか、読み込めませんでした。<button type="button" onClick={back}>一覧へ戻る</button></div>}
+    {summaryLoaded && dates.length === 0 && <p className="empty-note">開催週のレースは未取得です。上の取得ボタンから取得してください。</p>}
+    {summaryLoaded && selectedDate !== null && dates.length > 0 && !dates.includes(selectedDate) && <p role="alert">指定された開催日は取得済み一覧にありません。<button type="button" onClick={() => setSelectedDate(selectMeetingDate(summary?.races ?? [], null))}>開催日の選択を戻す</button></p>}
     {summary && dates.length > 0 && <section className="weekly-list-panel" aria-labelledby="weekly-list-heading">
       <div className="weekly-list-heading"><div><span>取得済みレース</span><h2 id="weekly-list-heading">レース一覧</h2></div>
         <label><input type="checkbox" checked={showCompleted} onChange={(event) => setShowCompleted(event.target.checked)} /> 発走後も表示</label></div>
@@ -119,7 +117,12 @@ export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
           {{ all: "全レース", attention: "注目あり", waiting: "データ待ち・不足" }[value]}
         </button>)}
       </div>
-      {visible.length === 0 ? <p className="empty-note weekly-empty">該当するレースはありません。</p>
+      {visible.length === 0 ? <div className="empty-note weekly-empty">
+        <p>{allStartedHidden ? "選択日のレースはすべて発走済みのため非表示です。" : "絞り込み条件に一致するレースはありません。"}</p>
+        {allStartedHidden
+          ? <button type="button" onClick={() => setShowCompleted(true)}>発走済みレースを表示</button>
+          : <button type="button" onClick={() => { setCourse("all"); setFilter("all"); setShowCompleted(true); }}>絞り込みを解除して全レースを表示</button>}
+      </div>
         : <ul className="weekly-race-list" aria-label="レース一覧">{visible.map((race) => {
           const canOpen = race.race_id !== null && race.snapshot_id !== null && race.judgement_id !== null;
           const attention = race.attention_horse_count !== null && race.judged_runner_count !== null
@@ -131,14 +134,13 @@ export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
             <button type="button" disabled={!canOpen} onClick={() => void openDetail(race)}
               aria-label={`${race.start_time} ${race.racecourse} ${race.race_number}R ${race.race_name} ${attentionStatus} ${attention}${level ? ` 注目度 ${level}` : ""} ${race.has_started ? "発走後" : acquisitionLabels[race.state]}`}>
               <time dateTime={`${race.race_date}T${race.start_time}`}>{race.start_time}</time>
-              <strong>{race.racecourse} {race.race_number}R</strong>
+              <strong title={`${race.racecourse} ${race.race_number}R`}>{race.racecourse} {race.race_number}R</strong>
               <span className="race-name">{race.race_name}</span>
               <span className="race-meta desktop-only">{race.surface}{race.distance_m}m / {race.condition_text}</span>
-              <span className="race-meta mobile-only">{race.distance_m}m</span>
-              <span className={`attention-band level-${race.attention_level ?? "pending"}`}>{attentionStatus}</span>
+              <span className={`attention-band level-${race.attention_level ?? "pending"}`} title={attentionStatus}><span className="desktop-only">{attentionStatus}</span><span className="mobile-only">{race.attention_horse_count === null ? "未判定" : race.attention_horse_count > 0 ? "注目あり" : "注目なし"}</span></span>
               <span className="attention-count desktop-only">{race.attention_horse_count === null ? "—" : attention}</span>
               <span className="attention-count mobile-only">{race.attention_horse_count === null || race.judged_runner_count === null ? "—" : `${race.attention_horse_count}/${race.judged_runner_count}`}</span>
-              <span className="acquisition-state">{race.has_started ? "発走後" : acquisitionLabels[race.state]}</span>
+              <span className="acquisition-state" title={race.has_started ? "発走後" : acquisitionLabels[race.state]}>{race.has_started ? "発走後" : race.state === "entries_waiting" ? "出馬待ち" : acquisitionLabels[race.state]}</span>
             </button>
           </li>;
         })}</ul>}

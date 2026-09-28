@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import WeeklyRaceWorkspace from "./WeeklyRaceWorkspace";
+import WeeklyRaceWorkspace, { selectMeetingDate } from "./WeeklyRaceWorkspace";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-beforeEach(() => { vi.stubGlobal("scrollTo", vi.fn()); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+beforeEach(() => { vi.stubGlobal("scrollTo", vi.fn()); vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-09-05T00:00:00Z")); });
 
 const race = (overrides: Record<string, unknown>) => ({
   race_date: "2026-09-05", racecourse: "東京", meeting_number: 4, meeting_day: 1,
@@ -62,7 +62,7 @@ it("filters the chronological row list and communicates attention without color 
   fireEvent.click(screen.getByRole("button", { name: "注目あり" }));
   expect(within(list).getAllByRole("button")).toHaveLength(2);
   fireEvent.click(screen.getByRole("tab", { name: /9月6日/ }));
-  expect(screen.getByText("該当するレースはありません。")).toBeTruthy();
+  expect(screen.getByText("絞り込み条件に一致するレースはありません。")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "データ待ち・不足" }));
   expect(screen.getByText("オッズ待ち")).toBeTruthy();
 });
@@ -121,4 +121,35 @@ it("keeps a completed attention race in the attention filter when completed race
   const row = screen.getByRole("button", { name: /東京 1R/ });
   expect(within(row).getByText("注目馬あり")).toBeTruthy();
   expect(within(row).getByText("発走後")).toBeTruthy();
+});
+
+it("selects Sunday or a supplied holiday, then the final date, preserving valid choices", () => {
+  const races = summary.races as Parameters<typeof selectMeetingDate>[0];
+  expect(selectMeetingDate(races, null, new Date("2026-09-05T16:00:00Z"))).toBe("2026-09-06");
+  const holiday = [...races, { ...races[0], race_date: "2026-09-07" }];
+  expect(selectMeetingDate(holiday, null, new Date("2026-09-07T00:00:00Z"))).toBe("2026-09-07");
+  expect(selectMeetingDate(holiday, null, new Date("2026-09-08T00:00:00Z"))).toBe("2026-09-07");
+  expect(selectMeetingDate(races, "2026-09-05", new Date("2026-09-06T00:00:00Z"))).toBe("2026-09-05");
+  expect(selectMeetingDate(holiday, null, new Date("2026-09-04T00:00:00Z"))).toBe("2026-09-05");
+});
+
+it("explains hidden completed races and restores them with a direct action", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ ...summary, races: [race({ has_started: true })] })));
+  render(<WeeklyRaceWorkspace />);
+  await screen.findByText("選択日のレースはすべて発走済みのため非表示です。");
+  fireEvent.click(screen.getByRole("button", { name: "発走済みレースを表示" }));
+  expect(screen.getByRole("list", { name: "レース一覧" })).toBeTruthy();
+});
+
+it("explains unacquired data and clears mismatched filters", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ ...summary, races: [] })));
+  const view = render(<WeeklyRaceWorkspace />);
+  await screen.findByText(/開催週のレースは未取得です/);
+  view.unmount();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(summary)));
+  render(<WeeklyRaceWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: "注目あり" }));
+  fireEvent.click(screen.getByRole("tab", { name: /9月6日/ }));
+  fireEvent.click(screen.getByRole("button", { name: "絞り込みを解除して全レースを表示" }));
+  expect(screen.getByRole("list", { name: "レース一覧" })).toBeTruthy();
 });

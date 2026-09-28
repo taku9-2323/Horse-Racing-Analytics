@@ -1,3 +1,4 @@
+import JstTimestamp from "./JstTimestamp";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type RaceState = "schedule_only" | "entries_waiting" | "odds_waiting" | "judgement_waiting" | "ready" | "stopped";
@@ -56,6 +57,8 @@ export default function MeetingWeekAcquisitionPanel({
   const [state, setState] = useState<"loading" | "idle" | "starting" | "error">("loading");
   const [message, setMessage] = useState("");
   const timer = useRef<number | null>(null);
+  const lifecycle = useRef<AbortController | null>(null);
+  const [connection, setConnection] = useState<"connected" | "checking" | "disconnected">("checking");
 
   const clearPoll = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -64,6 +67,7 @@ export default function MeetingWeekAcquisitionPanel({
 
   const loadCurrent = useCallback(async (signal?: AbortSignal): Promise<MeetingWeekSummary | null> => {
     const response = await fetch("/api/acquisition/jra/meeting-weeks/current", { signal });
+    if (signal?.aborted) return null;
     if (response.status === 404) {
       setSummary(null);
       onSummaryChange?.(null);
@@ -72,37 +76,43 @@ export default function MeetingWeekAcquisitionPanel({
     }
     if (!response.ok) throw new Error(await parseError(response, "開催週の取得状況を読み込めませんでした。"));
     const loaded = (await response.json()) as MeetingWeekSummary;
+    if (signal?.aborted) return null;
     setSummary(loaded);
     onSummaryChange?.(loaded);
     setState("idle");
     return loaded;
   }, [onSummaryChange]);
 
-  const poll = useCallback(async () => {
+  const poll = useCallback(async (signal = lifecycle.current?.signal) => {
+    if (!signal || signal.aborted) return;
+    clearPoll();
+    setConnection("checking");
     try {
-      const loaded = await loadCurrent();
+      const loaded = await loadCurrent(signal);
+      if (signal.aborted) return;
+      setConnection("connected");
+      setMessage("");
       if (loaded?.status === "running") {
-        timer.current = window.setTimeout(() => void poll(), 1500);
+        timer.current = window.setTimeout(() => void poll(signal), 1500);
       }
     } catch (error) {
+      if (signal.aborted) return;
       setMessage(error instanceof Error ? error.message : "開催週の取得状況を読み込めませんでした。");
-      setState("error");
+      setConnection("disconnected");
+      setState("idle");
     }
   }, [loadCurrent]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadCurrent(controller.signal).then((loaded) => {
-      if (loaded?.status === "running") timer.current = window.setTimeout(() => void poll(), 1500);
-    }).catch((error: unknown) => {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      setMessage(error instanceof Error ? error.message : "開催週の取得状況を読み込めませんでした。");
-      setState("error");
-    });
+    lifecycle.current = controller;
+    void poll(controller.signal);
     return () => { controller.abort(); clearPoll(); };
-  }, [loadCurrent, poll]);
+  }, [poll]);
 
   const start = async () => {
+    const signal = lifecycle.current?.signal;
+    if (!signal || signal.aborted || state === "starting" || connection !== "connected") return;
     clearPoll();
     setState("starting");
     setMessage("");
@@ -113,11 +123,13 @@ export default function MeetingWeekAcquisitionPanel({
       }
       if (response.ok) {
         const started = (await response.json()) as MeetingWeekSummary;
+        if (signal.aborted) return;
         setSummary(started);
         onSummaryChange?.(started);
       }
-      await poll();
+      await poll(signal);
     } catch (error) {
+      if (signal.aborted) return;
       setMessage(error instanceof Error ? error.message : "開催週の取得を開始できませんでした。");
       setState("error");
     }
@@ -136,13 +148,19 @@ export default function MeetingWeekAcquisitionPanel({
       <div>
         <p>開いた日の週に開催されるJRAレースを、取得できた情報まで保存します。</p>
         {summary && <strong>{summary.week_start} — {summary.week_end}</strong>}
-        {summary && <small className="last-acquired-at">最終取得 {summary.last_updated_at}</small>}
+        {summary && <small className="last-acquired-at">最終取得 <JstTimestamp value={summary.last_updated_at} /></small>}
       </div>
-      <button type="button" disabled={isRunning} onClick={() => void start()}>
+      <button type="button" disabled={isRunning || connection !== "connected"} onClick={() => void start()}>
         {isRunning ? "開催週を取得中…" : buttonLabel}
       </button>
     </div>
     {state === "loading" && <p className="message" role="status">開催週の取得状況を確認しています…</p>}
+    {connection === "disconnected" && <div className="import-error" role="alert">
+      <strong>進捗の通信が切断されました。{message}</strong>
+      <p>取得処理が停止したかは未確認です。{summary ? "表示中の進捗は最後に確認できた内容です。" : "進捗を再確認してください。"}</p>
+      <button type="button" onClick={() => void poll()}>進捗を再確認</button>
+    </div>}
+    {connection === "checking" && state !== "loading" && <p role="status">進捗を再確認中…</p>}
     {state === "error" && <div className="import-error" role="alert"><strong>{message}</strong></div>}
     {summary && <div className="meeting-week-result">
       <div className="meeting-week-progress" aria-live="polite">

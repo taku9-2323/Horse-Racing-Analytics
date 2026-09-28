@@ -264,7 +264,7 @@ th { color: #8f9b94; font-weight: 500; }
 .weekly-race-list time, .race-name, .race-meta, .attention-count, .acquisition-state { overflow: hidden; color: #aeb8b2; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .acquisition-state { text-align: right; }
 .mobile-only { display: none; }
-.attention-band { justify-self: start; border: 1px solid rgba(220, 204, 170, .22); border-radius: 999px; padding: 5px 8px; font-size: .72rem; white-space: nowrap; }
+.attention-band { justify-self: start; border: 1px solid rgba(220, 204, 170, .22); border-radius: 999px; padding: 5px 8px; font-size: .75rem; white-space: nowrap; }
 .weekly-race-list li > button:has(.level-low) { border-left-color: #768c79; background: rgba(118, 140, 121, .07); }
 .weekly-race-list li > button:has(.level-medium) { border-left-color: #c6a766; background: rgba(198, 167, 102, .11); }
 .weekly-race-list li > button:has(.level-high) { border-left-color: #efb34f; background: rgba(239, 179, 79, .19); }
@@ -511,13 +511,13 @@ footer {
   .race-state { grid-column: 2; grid-row: 1 / span 2; }
   .weekly-list-heading, .weekly-detail-header { align-items: flex-start; flex-direction: column; padding: 20px; }
   .date-tabs, .course-tabs, .race-filters { padding-right: 20px; padding-left: 20px; }
-  .weekly-race-list li > button { grid-template-columns: 2.3rem 3.4rem 2.8rem 3.2rem 2rem 3rem; gap: 2px; padding: 12px 3px; font-size: .65rem; }
+  .weekly-race-list li > button { grid-template-columns: 2.3rem minmax(0, 1fr) 3.5rem 2.2rem 3.1rem; gap: 2px; padding: 12px 3px; font-size: .75rem; }
   .weekly-race-list .race-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .desktop-only { display: none; }
   .mobile-only { display: block; }
-  .race-meta { font-size: .62rem; }
-  .attention-band { overflow: hidden; padding: 4px 2px; font-size: .5rem; text-overflow: ellipsis; }
-  .acquisition-state { font-size: .5rem; }
+  .weekly-race-list li > button > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .weekly-race-list time, .weekly-race-list .attention-count, .weekly-race-list .acquisition-state { font-size: .75rem; }
+  .weekly-race-list .attention-band { min-width: 0; padding: 4px 2px; font-size: .75rem; }
   .attention-count { text-align: right; }
   .back-button { margin-left: 20px; }
   .decision-times { grid-template-columns: 1fr; padding: 0 20px 20px; }
@@ -552,3 +552,8 @@ footer {
     border-left: 0;
   }
 }
+
+.csv-import-guide { padding: 12px 20px; min-width: 0; }
+.csv-import-guide summary { margin-top: 10px; cursor: pointer; }
+.csv-import-guide code { display: block; overflow-wrap: anywhere; white-space: normal; }
+.result-import .csv-import-guide { grid-column: 1 / -1; padding: 0; }

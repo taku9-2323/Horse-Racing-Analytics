@@ -1,11 +1,15 @@
 # Horse Racing Analytics
 
+[GitHub repository](https://github.com/taku9-2323/Horse-Racing-Analytics)
+
 JRAの単勝・複勝を対象に、レース前の市場情報と将来の独立予測モデルを記録・検証する、ローカルファーストの分析アプリです。
 
 現段階では利益を生む予測モデルではなく、予測を事前固定し、確率校正と収支を正しく評価するための基盤を段階的に開発します。
 
 ## Project documents
 
+- [CI/CDとGitHub Release配布](docs/ci-cd.md)
+- [配布ZIPのWindowsセットアップ](docs/release-package.md)
 - [開発計画](DEVELOPMENT_PLAN.md)
 - [製品境界と用語](CONTEXT.md)
 - [実装仕様](.scratch/horse-racing-analytics/spec.md)
@@ -34,16 +38,37 @@ JRAの単勝・複勝を対象に、レース前の市場情報と将来の独�
 
 画面から整合したSQLiteバックアップを作成・再検証・復元でき、復元前の現在データは自動保全されます。監査・移行用に全業務テーブルをJSONまたはテーブル別CSV ZIPとしてダウンロードできます。
 
+## Improvement issues
+
+- [#9 判定理由で未達条件と現在値を区別する](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/9)
+- [#10 券種・モデル版別の確率校正](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/10)
+- [#11 事前固定ルールの版別成績](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/11)
+- [#12 注目頭数と判定対象頭数の表示](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/12)
+- [#13 PC・スマートフォンでの出馬表比較](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/13)
+- [#14 保存済みオッズの推移と差分](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/14)
+- [#15 個人の印・メモ・振り返り](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/15)
+- [#16 許可データ源と独立モデル導入条件の調査](https://github.com/taku9-2323/Horse-Racing-Analytics/issues/16)
+
 ## CSV contract
 
 チケット02の入力例は [`examples/sample-race.csv`](examples/sample-race.csv) です。1ファイルに1レースの全出走馬を記載し、UTF-8で保存します。
 
 結果は [`examples/sample-results.csv`](examples/sample-results.csv) と同じ見出しで取り込みます。`status` は `確定`、`取消`、`除外` のいずれか、払戻額はJRA発表の100円当たり金額です。取消・除外では着順を空欄、払戻額を0にすると購入額が同額返還されます。
 
+## Sample data
+
+`examples/sample-race.csv` and `examples/sample-results.csv` use fabricated demonstration values. They are not real JRA races, odds, or results and must not be treated as historical or model-evaluation data.
+
+## CI/CD
+
+The workflow in `.github/workflows/ci.yml` is configured to check pull requests and pushes to `main` with backend type-checking/tests and frontend type-checking/tests/build. A push of a `v*` tag on a commit in `main` is configured to publish the verified ZIP and checksum as a GitHub Release. This distributes files through GitHub; it does not deploy the application to an external production host, and the workflow does not call an LLM.
+
+Check [GitHub Actions](https://github.com/taku9-2323/Horse-Racing-Analytics/actions) and [GitHub Releases](https://github.com/taku9-2323/Horse-Racing-Analytics/releases) for actual run and publication status. This README describes the configured flow; it does not claim that a run has succeeded or a release has been published.
+
 ## Prerequisites
 
 - Python 3.12
-- Node.js 24 LTS
+- Node.js 24.21.0
 - Git 2.55
 
 ## Setup
@@ -80,3 +105,7 @@ SQLiteの実データはOneDrive同期対象外の `%LOCALAPPDATA%\HorseRacingAn
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
+
+## License
+
+There is currently no `LICENSE` file in this repository; no license has been selected or added here.

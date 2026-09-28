@@ -145,6 +145,7 @@ it("opens the fixed decision for the selected horse and restores the list on bac
   expect(screen.getByText("一覧で選択")).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/races/11/weekly-decision-view?snapshot_id=101&judgement_id=201",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
   fireEvent.click(screen.getByRole("button", { name: "設定・バックアップへ" }));
   expect(onNavigate).toHaveBeenCalledWith("settings");

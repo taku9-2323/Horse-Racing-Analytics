@@ -1,3 +1,4 @@
+import JstTimestamp from "./JstTimestamp";
 import { useEffect, useState } from "react";
 
 type RunnerOdds = {
@@ -158,8 +159,8 @@ export default function PredictionPanel({ raceId, runners }: Props) {
           {snapshots.length === 0 && <p className="empty-note">まだ保存されていません。</p>}
           {snapshots.map((snapshot) => (
             <article className="workflow-card" key={snapshot.id}>
-              <strong>時点 #{snapshot.id} / 観測 {snapshot.observed_at ?? "不明"}</strong>
-              <span>受付 {snapshot.received_at}</span>
+              <strong>時点 #{snapshot.id} / 観測 <JstTimestamp value={snapshot.observed_at} unknown="観測時刻不明" /></strong>
+              <span>受付 <JstTimestamp value={snapshot.received_at} /></span>
               <span>{snapshot.runners.map((runner) => `${runner.horse_number}番 単勝${runner.win_odds} / 複勝${runner.place_odds_min}–${runner.place_odds_max}`).join(" / ")}</span>
               <button type="button" onClick={() => void freeze(snapshot.id)}>この時点の予測を固定</button>
             </article>
@@ -173,10 +174,10 @@ export default function PredictionPanel({ raceId, runners }: Props) {
               <strong>{prediction.status === "active" ? "固定済み" : "無効化済み"} / {prediction.prediction_kind === "independent"
                 ? `独立予測 ${prediction.model_identifier} ${prediction.model_version}`
                 : `市場基準 ${prediction.model_version}`}</strong>
-              <span>入力時点 #{prediction.input_snapshot_id} / 固定 {prediction.frozen_at}</span>
+              <span>入力時点 #{prediction.input_snapshot_id} / 固定 <JstTimestamp value={prediction.frozen_at} /></span>
               {prediction.prediction_kind === "independent" ? (
                 <>
-                  <span>モデル時点 {prediction.prediction_as_of} / 根拠 {prediction.rationale}</span>
+                  <span>モデル時点 <JstTimestamp value={prediction.prediction_as_of} /> / 根拠 {prediction.rationale}</span>
                   <span>{prediction.runners.map((runner) => {
                     const values = [
                       runner.win_probability === null ? null : `単勝予測確率 ${(runner.win_probability * 100).toFixed(2)}%`,

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useViewState } from "./ViewState";
+import { useEffect, useRef, useState } from "react";
 
 
 type Totals = {
@@ -52,42 +53,57 @@ const EMPTY_FILTERS: FilterState = {
   oddsMin: "", oddsMax: "", popularityMin: "", popularityMax: "",
   frozenFrom: "", frozenTo: "",
 };
+const optionId = (identifier: string, version: string | number) => JSON.stringify([identifier, String(version)]);
+const filterLabels: Record<keyof FilterState, string> = {
+  modelOption: "モデル版", tagOption: "タグ版", racecourse: "競馬場", betType: "券種",
+  oddsMin: "オッズ下限", oddsMax: "オッズ上限", popularityMin: "人気下限", popularityMax: "人気上限",
+  frozenFrom: "予測固定時刻（開始）", frozenTo: "予測固定時刻（終了）",
+};
+const describeFilters = (selected: FilterState) => Object.entries(selected)
+  .filter(([, value]) => value !== "")
+  .map(([key, value]) => {
+    const display = key === "modelOption" || key === "tagOption" ? (JSON.parse(value) as string[]).join(" / ")
+      : key === "betType" ? (value === "win" ? "単勝" : "複勝") : value;
+    return `${filterLabels[key as keyof FilterState]}: ${display}`;
+  }).join("、") || "すべて";
 const percent = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(2)}%`;
 const yen = (value: number | null) => value === null ? "—" : `¥${value.toLocaleString("ja-JP")}`;
 
 function EvaluationPanel() {
-  const [report, setReport] = useState<EvaluationReport | null>(null);
+  const requestVersion = useRef(0);
+  const [savedFilters, setSavedFilters] = useViewState<string | null>("evaluation", null);
+  const [result, setResult] = useState<{ report: EvaluationReport; applied: FilterState } | null>(null);
+  const report = result?.report;
+
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
+  const unapplied = result && JSON.stringify(filters) !== JSON.stringify(result.applied);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const load = async (selected: FilterState = filters) => {
+  const load = async (selected: FilterState = filters, persist = true) => {
+    const request = ++requestVersion.current;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams();
-    if (selected.modelOption && report) {
-      const model = report.filter_options.models[Number(selected.modelOption)];
-      if (model) {
-        params.set("model_identifier", model.identifier);
-        params.set("model_version", model.version);
-      }
-    }
-    if (selected.tagOption && report) {
-      const tag = report.filter_options.tags[Number(selected.tagOption)];
-      if (tag) {
-        params.set("tag_rule_key", tag.rule_key);
-        params.set("tag_version", String(tag.version));
-      }
-    }
-    const scalarFilters: Array<[string, string]> = [
-      ["racecourse", selected.racecourse], ["bet_type", selected.betType],
-      ["odds_min", selected.oddsMin], ["odds_max", selected.oddsMax],
-      ["popularity_min", selected.popularityMin], ["popularity_max", selected.popularityMax],
-    ];
-    for (const [key, value] of scalarFilters) if (value) params.set(key, value);
-    if (selected.frozenFrom) params.set("prediction_frozen_from", new Date(selected.frozenFrom).toISOString());
-    if (selected.frozenTo) params.set("prediction_frozen_to", new Date(selected.frozenTo).toISOString());
     try {
+      const params = new URLSearchParams();
+      if (selected.modelOption) {
+        const [identifier, version] = JSON.parse(selected.modelOption) as string[];
+        params.set("model_identifier", identifier);
+        params.set("model_version", version);
+      }
+      if (selected.tagOption) {
+        const [ruleKey, version] = JSON.parse(selected.tagOption) as string[];
+        params.set("tag_rule_key", ruleKey);
+        params.set("tag_version", version);
+      }
+      const scalarFilters: Array<[string, string]> = [
+        ["racecourse", selected.racecourse], ["bet_type", selected.betType],
+        ["odds_min", selected.oddsMin], ["odds_max", selected.oddsMax],
+        ["popularity_min", selected.popularityMin], ["popularity_max", selected.popularityMax],
+      ];
+      for (const [key, value] of scalarFilters) if (value) params.set(key, value);
+      if (selected.frozenFrom) params.set("prediction_frozen_from", new Date(selected.frozenFrom).toISOString());
+      if (selected.frozenTo) params.set("prediction_frozen_to", new Date(selected.frozenTo).toISOString());
       const response = await fetch(`/api/evaluation${params.size ? `?${params.toString()}` : ""}`);
       if (!response.ok) {
         const payload = await response.json() as { detail?: { message?: string } | string };
@@ -95,13 +111,38 @@ function EvaluationPanel() {
         throw new Error(typeof detail === "object" && detail?.message
           ? detail.message : typeof detail === "string" ? detail : `HTTP ${response.status}`);
       }
-      setReport(await response.json() as EvaluationReport);
+      const report = await response.json() as EvaluationReport;
+      if (request !== requestVersion.current) return;
+      setResult({ report, applied: { ...selected } });
+      if (persist) setSavedFilters(JSON.stringify(selected));
     } catch (caught) {
+      if (request !== requestVersion.current) return;
       setError(caught instanceof Error ? caught.message : "成績を読み込めませんでした。");
     } finally {
-      setLoading(false);
+      if (request === requestVersion.current) setLoading(false);
     }
   };
+
+  useEffect(() => () => { requestVersion.current++; }, []);
+
+  useEffect(() => {
+    requestVersion.current++;
+    setLoading(false);
+    setError("");
+    if (savedFilters === null) { setResult(null); setFilters(EMPTY_FILTERS); return; }
+    // A successful local apply already has the same result; history/reload needs GET only.
+    if (result && JSON.stringify(result.applied) === savedFilters) return;
+    try {
+      const raw = JSON.parse(savedFilters);
+      if (!raw || typeof raw !== "object" || Object.keys(EMPTY_FILTERS).some((key) => typeof raw[key] !== "string")) throw new Error();
+      const restored = Object.fromEntries(Object.keys(EMPTY_FILTERS).map((key) => [key, raw[key]])) as FilterState;
+      for (const id of [restored.modelOption, restored.tagOption]) {
+        if (id) { const pair = JSON.parse(id); if (!Array.isArray(pair) || pair.length !== 2 || pair.some((part) => typeof part !== "string")) throw new Error(); }
+      }
+      setFilters(restored);
+      void load(restored, false);
+    } catch { setResult(null); setLoading(false); setError("URLの成績条件が不正です。条件をリセットしてください。"); }
+  }, [savedFilters]);
 
   const update = (key: keyof FilterState, value: string) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -135,22 +176,22 @@ function EvaluationPanel() {
           </button>
         </div>
       )}
-      {error && <p className="message error" role="alert">{error}</p>}
+      {error && <p className="message error" role="alert">{report ? `更新失敗：${error} 表示中の結果は適用済み条件の集計です。` : error}{!report && <button type="button" onClick={() => { setSavedFilters(null); setError(""); }}>条件をリセット</button>}</p>}
       {report && (
         <div className="evaluation-content">
           <div className="evaluation-filters">
             <label>モデル版<select value={filters.modelOption} onChange={(event) => update("modelOption", event.target.value)}>
               <option value="">すべて</option>
-              {report.filter_options.models.map((model, index) => (
-                <option key={`${model.identifier}-${model.version}`} value={String(index)}>
+              {report.filter_options.models.map((model) => (
+                <option key={optionId(model.identifier, model.version)} value={optionId(model.identifier, model.version)}>
                   {model.identifier} / {model.version}
                 </option>
               ))}
             </select></label>
             <label>タグ版<select value={filters.tagOption} onChange={(event) => update("tagOption", event.target.value)}>
               <option value="">すべて</option>
-              {report.filter_options.tags.map((tag, index) => (
-                <option key={`${tag.rule_key}-${tag.version}`} value={String(index)}>
+              {report.filter_options.tags.map((tag) => (
+                <option key={optionId(tag.rule_key, tag.version)} value={optionId(tag.rule_key, tag.version)}>
                   {tag.rule_key} / v{tag.version}
                 </option>
               ))}
@@ -170,8 +211,11 @@ function EvaluationPanel() {
             <label>予測固定時刻（開始）<input type="datetime-local" value={filters.frozenFrom} onChange={(event) => update("frozenFrom", event.target.value)} /></label>
             <label>予測固定時刻（終了）<input type="datetime-local" value={filters.frozenTo} onChange={(event) => update("frozenTo", event.target.value)} /></label>
             <button type="button" disabled={loading} onClick={() => void load()}>{loading ? "集計中…" : "条件を適用"}</button>
+            <button type="button" disabled={loading} onClick={() => { setFilters(EMPTY_FILTERS); void load(EMPTY_FILTERS); }}>条件をリセット</button>
           </div>
-
+          {unapplied && <p role="status">未適用の変更があります。</p>}
+          {loading && <p role="status">再集計中です。表示中の結果は適用済み条件の集計です。</p>}
+          <p aria-label="適用済み条件">適用済み条件：{result && describeFilters(result.applied)}</p>
           <div className="evaluation-summary">
             <article><span>Brierスコア</span><strong>{report.calibration.brier_score?.toFixed(4) ?? "—"}</strong></article>
             <article><span>対象</span><strong>公式評価対象 {report.calibration.eligible_prediction_runs}予測 / {report.calibration.runner_count}頭</strong></article>

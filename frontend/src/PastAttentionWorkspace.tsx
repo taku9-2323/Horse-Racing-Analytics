@@ -1,6 +1,8 @@
+import { useDecisionRoute } from "./useDecisionRoute";
+import { useViewState } from "./ViewState";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import RaceDecisionDetail, { type DecisionView } from "./RaceDecisionDetail";
+import RaceDecisionDetail from "./RaceDecisionDetail";
 
 
 type PastAttentionHorse = {
@@ -62,19 +64,17 @@ const matchesResult = (horse: PastAttentionHorse, filter: ResultFilter) => {
   return horse.finish_position >= 4;
 };
 
-type Props = { onNavigate?: (area: "evaluation" | "import" | "settings") => void };
+type Props = { onNavigate?: (area: "evaluation" | "import" | "settings", raceId?: number) => void };
 
 export default function PastAttentionWorkspace({ onNavigate }: Props) {
-  const [pageNumber, setPageNumber] = useState(1);
+  const [pageNumber, setPageNumber] = useViewState<number>("pastPage", 1);
   const [page, setPage] = useState<PastAttentionPage | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
-  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
-  const [selectedDate, setSelectedDate] = useState("all");
-  const [selectedCourse, setSelectedCourse] = useState("all");
-  const [timingFilter, setTimingFilter] = useState<TimingFilter>("all");
-  const [detail, setDetail] = useState<DecisionView | null>(null);
-  const [selectedHorseNumber, setSelectedHorseNumber] = useState<number>();
-  const [detailState, setDetailState] = useState<"idle" | "loading" | "error">("idle");
+  const [resultFilter, setResultFilter] = useViewState<ResultFilter>("pastResult", "all");
+  const [selectedDate, setSelectedDate] = useViewState<string>("pastDate", "all");
+  const [selectedCourse, setSelectedCourse] = useViewState<string>("pastCourse", "all");
+  const [timingFilter, setTimingFilter] = useViewState<TimingFilter>("pastTiming", "all");
+  const { detail, state: detailState, horseNumber: selectedHorseNumber, setReference } = useDecisionRoute("past");
   const [bulkRun, setBulkRun] = useState<BulkResultRun | null>(null);
   const [bulkState, setBulkState] = useState<"idle" | "starting" | "error">("idle");
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -151,26 +151,11 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
     const judgementId = horse.pre_race_judgement_id ?? horse.post_start_judgement_id;
     if (snapshotId === null || judgementId === null) return;
     listScroll.current = window.scrollY;
-    setDetailState("loading");
-    try {
-      const query = new URLSearchParams({
-        snapshot_id: String(snapshotId), judgement_id: String(judgementId),
-      });
-      const response = await fetch(`/api/races/${horse.race_id}/weekly-decision-view?${query}`);
-      if (!response.ok) throw new Error();
-      setDetail(await response.json() as DecisionView);
-      setSelectedHorseNumber(horse.horse_number);
-      setDetailState("idle");
-      window.scrollTo({ top: 0 });
-    } catch {
-      setDetailState("error");
-    }
+    setReference(`${horse.race_id},${snapshotId},${judgementId},${horse.horse_number}`);
+    window.scrollTo({ top: 0 });
   };
-
   const back = () => {
-    setDetail(null);
-    setSelectedHorseNumber(undefined);
-    setDetailState("idle");
+    setReference(null);
     window.setTimeout(() => window.scrollTo({ top: listScroll.current }), 0);
   };
 
@@ -262,7 +247,7 @@ export default function PastAttentionWorkspace({ onNavigate }: Props) {
     </div>
 
     {detailState === "loading" && <p className="message" role="status">レース詳細を読み込んでいます…</p>}
-    {detailState === "error" && <p className="message error" role="alert">レース詳細を読み込めませんでした。</p>}
+    {detailState === "error" && <p className="message error" role="alert">指定されたレース・固定時点が見つからないか、読み込めませんでした。<button type="button" onClick={back}>一覧へ戻る</button></p>}
     {loadState === "loading" && <p className="message" role="status">過去レースを読み込んでいます…</p>}
     {loadState === "error" && <p className="message error" role="alert">過去レースを読み込めませんでした。</p>}
     {loadState === "ready" && visibleWeeks.map((week) => <section key={week.week_start}

@@ -37,7 +37,8 @@ it("shows independent probabilities separately from market shares and break-even
   const card = await screen.findByText("固定済み / 独立予測 fake-independent-model test-1");
   const article = card.closest("article");
   expect(article).toBeTruthy();
-  expect(within(article!).getByText("モデル時点 2026-08-30T04:54:00Z / 根拠 固定fixtureによる境界検証")).toBeTruthy();
+  expect(article!.textContent).toContain("モデル時点 2026/08/30 13:54 JST / 根拠 固定fixtureによる境界検証");
+  expect(within(article!).getByTitle("2026-08-30T04:54:00Z").textContent).toBe("2026/08/30 13:54 JST");
   expect(within(article!).getByText("1番 単勝予測確率 42.00% / 複勝予測確率 78.00%")).toBeTruthy();
   expect(article!.textContent).not.toContain("市場投票シェア");
   expect(article!.textContent).not.toContain("損益分岐");

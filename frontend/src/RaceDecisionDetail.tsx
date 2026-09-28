@@ -1,3 +1,4 @@
+import JstTimestamp from "./JstTimestamp";
 import BettingPanel from "./BettingPanel";
 
 export type DecisionRunner = {
@@ -24,7 +25,7 @@ type Props = {
   backLabel: string;
   onBack: () => void;
   selectedHorseNumber?: number;
-  onNavigate?: (area: "evaluation" | "import" | "settings") => void;
+  onNavigate?: (area: "evaluation" | "import" | "settings", raceId?: number) => void;
 };
 
 const percent = (value: number | null) => value === null ? "—" : `${Math.round(value * 100)}%`;
@@ -48,8 +49,8 @@ export default function RaceDecisionDetail({
     </div>
     <p className="detail-data-state">データ状態: {dataState}</p>
     <dl className="decision-times">
-      <div><dt>オッズ観測</dt><dd>{detail.observed_at ?? "時刻不明"}</dd></div>
-      <div><dt>判定固定</dt><dd>{detail.judgement_frozen_at}</dd></div>
+      <div><dt>オッズ観測</dt><dd><JstTimestamp value={detail.observed_at} unknown="観測時刻不明" /></dd></div>
+      <div><dt>判定固定</dt><dd><JstTimestamp value={detail.judgement_frozen_at} /></dd></div>
       <div><dt>ルール</dt><dd>v{detail.rule_version_id}</dd></div>
     </dl>
     <div className="decision-runner-list" aria-label="注目馬と判定理由">
@@ -72,7 +73,7 @@ export default function RaceDecisionDetail({
     <aside className="detail-next"><strong>履歴・メンテナンス</strong><p>判定履歴、訂正、バックアップを各管理画面で確認できます。</p>
       <div className="detail-next-actions">
         <button type="button" onClick={() => onNavigate?.("evaluation")}>成績・検証へ</button>
-        <button type="button" onClick={() => onNavigate?.("import")}>データ取込・訂正へ</button>
+        <button type="button" onClick={() => onNavigate?.("import", detail.race_id)}>データ取込・訂正へ</button>
         <button type="button" onClick={() => onNavigate?.("settings")}>設定・バックアップへ</button>
       </div>
     </aside>

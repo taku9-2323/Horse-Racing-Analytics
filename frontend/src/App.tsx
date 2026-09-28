@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import CsvImportGuide from "./CsvImportGuide";
+import { ViewStateProvider, useViewState } from "./ViewState";
+import { useEffect, useRef, useState } from "react";
 import PredictionPanel from "./PredictionPanel";
 import AnalysisTagsPanel from "./AnalysisTagsPanel";
 import BettingPanel from "./BettingPanel";
@@ -54,8 +56,11 @@ const latestRaceFirst = (items: RaceListItem[]) => [...items].sort(
   (left, right) => right.race.start_utc.localeCompare(left.race.start_utc) || right.race_id - left.race_id,
 );
 
-function App() {
-  const [activeArea, setActiveArea] = useState<"weekly" | "past" | "evaluation" | "import" | "settings">("weekly");
+function AppContent() {
+  const analysisRequest = useRef(0);
+  const [activeArea, setActiveArea] = useViewState<"weekly" | "past" | "evaluation" | "import" | "settings">("area", "weekly");
+  const [routeError, setRouteError] = useViewState<boolean>("routeError", false);
+  const [importRace, setImportRace] = useViewState<number | null>("importRace", null);
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<RaceAnalysis | null>(null);
@@ -69,6 +74,7 @@ function App() {
 
   const showAnalysis = (loaded: RaceAnalysis) => {
     setAnalysis(loaded);
+    setImportRace(loaded.race_id);
     setSelectedRaceId(loaded.race_id);
     setRaces((current) => latestRaceFirst([
       { race_id: loaded.race_id, race: loaded.race },
@@ -91,26 +97,40 @@ function App() {
     }
   };
 
-  const loadRace = async (raceId: number) => {
+  const loadRace = async (raceId: number, signal?: AbortSignal) => {
+    const request = ++analysisRequest.current;
     setAnalysisState("loading");
     setAnalysisError("");
     setAnalysis(null);
     setSelectedRaceId(raceId);
     try {
-      const response = await fetch(`/api/races/${raceId}`);
+      const response = await fetch(`/api/races/${raceId}`, { signal });
       if (!response.ok) {
         throw new Error(response.status === 404
           ? "レースが見つかりません。登録済み一覧を再読み込みするか、JRAのレース情報とオッズを登録してください。"
           : "市場分析を読み込めませんでした。再読み込みするか、CSV取込を使用してください。");
       }
       const loaded = (await response.json()) as RaceAnalysis;
+      if (signal?.aborted || request !== analysisRequest.current) return;
       showAnalysis(loaded);
       setAnalysisState("idle");
     } catch (error) {
+      if (signal?.aborted || request !== analysisRequest.current) return;
       setAnalysisError(error instanceof Error ? error.message : "レースを読み込めませんでした。");
       setAnalysisState("error");
     }
   };
+
+  const navigate = (area: "evaluation" | "import" | "settings", raceId?: number) => {
+    if (area === "import" && raceId !== undefined) setImportRace(raceId);
+    setActiveArea(area);
+  };
+  useEffect(() => {
+    const controller = new AbortController();
+    if (activeArea === "import" && importRace === null) { setAnalysis(null); setSelectedRaceId(null); setAnalysisState("idle"); }
+    if (activeArea === "import" && importRace !== null && analysis?.race_id !== importRace) void loadRace(importRace, controller.signal);
+    return () => { analysisRequest.current++; controller.abort(); };
+  }, [activeArea, importRace]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -232,10 +252,11 @@ function App() {
         )}
       </section>}
 
-      {activeArea === "weekly" && <WeeklyRaceWorkspace onNavigate={setActiveArea} />}
-      {activeArea === "past" && <PastAttentionWorkspace onNavigate={setActiveArea} />}
+      {routeError && <p role="alert">URLの閲覧条件が不正です。<button type="button" onClick={() => { setRouteError(false); setActiveArea("weekly"); }}>一覧へ戻る</button></p>}
+      {activeArea === "weekly" && <WeeklyRaceWorkspace onNavigate={navigate} />}
+      {activeArea === "past" && <PastAttentionWorkspace onNavigate={navigate} />}
 
-      {activeArea === "import" && <><JraRaceAcquisitionPanel onRaceRegistered={loadRace} />
+      {activeArea === "import" && <><JraRaceAcquisitionPanel onRaceRegistered={(raceId) => setImportRace(raceId)} />
 
       <section className="panel analysis-panel" aria-labelledby="race-analysis-heading">
         <div className="panel-heading">
@@ -264,7 +285,7 @@ function App() {
                   type="button"
                   key={item.race_id}
                   aria-pressed={selectedRaceId === item.race_id}
-                  onClick={() => void loadRace(item.race_id)}
+                  onClick={() => { if (importRace === item.race_id) void loadRace(item.race_id); else setImportRace(item.race_id); }}
                 >
                   {item.race.race_date} {item.race.racecourse} {item.race.race_number}R
                 </button>
@@ -275,12 +296,14 @@ function App() {
           {analysisState === "error" && (
             <div className="import-error" role="alert">
               <strong>{analysisError}</strong>
+              <button type="button" onClick={() => { setImportRace(null); setAnalysisError(""); setAnalysisState("idle"); }}>登録済み一覧へ戻る</button>
               {selectedRaceId !== null && (
                 <button type="button" onClick={() => void loadRace(selectedRaceId)}>選択したレースを再読み込み</button>
               )}
             </div>
           )}
         </section>
+        <CsvImportGuide kind="race" />
         <div className="import-form">
           <label htmlFor="race-csv">CSVファイル</label>
           <input
@@ -381,4 +404,4 @@ function App() {
 
 const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 
-export default App;
+export default function App() { return <ViewStateProvider><AppContent /></ViewStateProvider>; }

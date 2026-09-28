@@ -1,3 +1,5 @@
+import { formatJst } from "./JstTimestamp";
+import JstTimestamp from "./JstTimestamp";
 import { useState } from "react";
 
 type Option = { id: number; observed_at?: string | null; title?: string; version?: number };
@@ -36,13 +38,13 @@ export default function MarketRuleComparisonPanel({ raceId }: { raceId: number }
     <h4 id="market-rule-comparison-heading">市場順位と固定ルール判定の比較</h4>
     {rules.length === 0 && snapshots.length === 0 && <button type="button" onClick={() => void open()}>比較を開く</button>}
     {(rules.length > 0 || snapshots.length > 0) && <div className="snapshot-form">
-      <label>比較オッズ時点 <select value={snapshotId ?? ""} onChange={(event) => { setSnapshotId(Number(event.target.value)); setComparison(null); }}>{snapshots.map((item) => <option key={item.id} value={item.id}>#{item.id} / {item.observed_at ?? "観測時刻不明"}</option>)}</select></label>
+      <label>比較オッズ時点 <select value={snapshotId ?? ""} onChange={(event) => { setSnapshotId(Number(event.target.value)); setComparison(null); }}>{snapshots.map((item) => <option title={item.observed_at ?? undefined} key={item.id} value={item.id}>#{item.id} / {formatJst(item.observed_at, "観測時刻不明")}</option>)}</select></label>
       <label>比較ルール版 <select value={ruleId ?? ""} onChange={(event) => { setRuleId(Number(event.target.value)); setComparison(null); }}>{rules.map((item) => <option key={item.id} value={item.id}>{item.title} v{item.version}</option>)}</select></label>
       <button type="button" disabled={snapshotId === null || ruleId === null} onClick={() => void compare()}>同じ時点で比較</button>
     </div>}
     {error && <p role="alert">{error}</p>}
     {comparison && <>
-      <p><b>{fixedLabel[comparison.fixed_state]}</b>{comparison.official_pre_race_eligible ? " / 公式な事前判定" : ""} / 観測 {comparison.observed_at ?? "不明"} / 受付 {comparison.received_at ?? "不明"}</p>
+      <p><b>{fixedLabel[comparison.fixed_state]}</b>{comparison.official_pre_race_eligible ? " / 公式な事前判定" : ""} / 観測 <JstTimestamp value={comparison.observed_at} unknown="観測時刻不明" /> / 受付 <JstTimestamp value={comparison.received_at} /></p>
       {comparison.next_action && <p role="status">{comparison.next_action}</p>}
       {comparison.rows.length > 0 && <div className="table-wrap"><table><thead><tr><th>馬番・馬名</th><th>市場順位・シェア</th><th>市場の根拠</th><th>ルール判定</th><th>判定理由・欠損</th></tr></thead><tbody>
         {comparison.rows.map((row) => <tr key={row.horse_number}><td>{row.horse_number} {row.horse_name}</td><td>{row.market_rank === null ? "順位なし" : `${row.market_rank}位 / ${((row.normalized_win_market_share ?? 0) * 100).toFixed(2)}%`}</td><td>{row.market_reason}</td><td>{row.rule_judgement ?? "未生成"}</td><td>{[row.rule_reason, ...row.missing_reasons].join(" / ")}</td></tr>)}

@@ -1,4 +1,6 @@
-import { useState } from "react";
+import CsvImportGuide from "./CsvImportGuide";
+import { formatJst } from "./JstTimestamp";
+import { useRef, useState } from "react";
 
 type Bet = {
   id: number; horse_number: number; bet_type: "win" | "place";
@@ -36,6 +38,34 @@ export default function BettingPanel({ raceId, runners }: Props) {
   const [correctionReason, setCorrectionReason] = useState("");
   const [message, setMessage] = useState("");
 
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState<"bet" | "import" | "correct" | null>(null);
+  const [ledgerRefreshNeeded, setLedgerRefreshNeeded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshSavedLedger = async () => {
+    setRefreshing(true);
+    try {
+      await loadLedger();
+      setLedgerRefreshNeeded(false);
+      setMessage("保存済みの購入台帳を更新しました。");
+    } catch {
+      setMessage("登録済み・表示更新に失敗しました。再登録せず、台帳を再読み込みしてください。");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const refreshAfterSave = async (successMessage: string) => {
+    try {
+      await loadLedger();
+      setMessage(successMessage);
+    } catch {
+      setLedgerRefreshNeeded(true);
+      setMessage(`${successMessage} 登録済み・表示更新に失敗しました。再登録せず、台帳を再読み込みしてください。`);
+    }
+  };
+
   const loadLedger = async () => {
     const response = await fetch(`/api/races/${raceId}/ledger`);
     if (!response.ok) throw new Error(await responseError(response));
@@ -61,6 +91,10 @@ export default function BettingPanel({ raceId, runners }: Props) {
   };
 
   const createBet = async () => {
+    if (savingRef.current || ledgerRefreshNeeded) return;
+    savingRef.current = true;
+    setSaving("bet");
+    setMessage("実購入を登録中…");
     try {
       const response = await fetch(`/api/races/${raceId}/bets`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -71,15 +105,20 @@ export default function BettingPanel({ raceId, runners }: Props) {
         }),
       });
       if (!response.ok) throw new Error(await responseError(response));
-      await loadLedger();
-      setMessage("実購入を登録しました。");
+      await refreshAfterSave("実購入を登録しました。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "購入を登録できませんでした。");
+    } finally {
+      savingRef.current = false;
+      setSaving(null);
     }
   };
 
   const importResults = async (correct = false) => {
-    if (!resultFile) return;
+    if (!resultFile || savingRef.current || ledgerRefreshNeeded) return;
+    savingRef.current = true;
+    setSaving(correct ? "correct" : "import");
+    setMessage(correct ? "訂正版で再精算中…" : "結果を取り込み中…");
     try {
       const endpoint = correct
         ? `/api/races/${raceId}/results/correct?reason=${encodeURIComponent(correctionReason.trim())}`
@@ -88,11 +127,13 @@ export default function BettingPanel({ raceId, runners }: Props) {
         method: "POST", headers: { "Content-Type": "text/csv; charset=utf-8" }, body: resultFile,
       });
       if (!response.ok) throw new Error(await responseError(response));
-      await loadLedger();
       if (correct) setCorrectionReason("");
-      setMessage(correct ? "元の結果を残し、訂正版で再精算しました。" : "公式結果を取り込み、購入を精算しました。");
+      await refreshAfterSave(correct ? "元の結果を残し、訂正版で再精算しました。" : "公式結果を取り込み、購入を精算しました。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "結果を取り込めませんでした。");
+    } finally {
+      savingRef.current = false;
+      setSaving(null);
     }
   };
 
@@ -129,9 +170,10 @@ export default function BettingPanel({ raceId, runners }: Props) {
           <h4 id="betting-heading">実購入・結果・収支</h4>
           <p>現在は期待値候補がないため、実購入は候補外裁量として記録し、JRA発表の100円当たり払戻で精算します。</p>
         </div>
-        <button type="button" onClick={() => void showLedger()}>購入・収支を表示</button>
+        <button type="button" disabled={saving !== null || refreshing || ledgerRefreshNeeded} onClick={() => void showLedger()}>購入・収支を表示</button>
       </div>
       {message && <p className="workflow-message" role="status">{message}</p>}
+      {ledgerRefreshNeeded && <button type="button" disabled={refreshing} onClick={() => void refreshSavedLedger()}>{refreshing ? "台帳を再読み込み中…" : "台帳を再読み込み"}</button>}
       {ledger && (
         <>
           <div className="bet-form">
@@ -145,28 +187,29 @@ export default function BettingPanel({ raceId, runners }: Props) {
             <label>購入判断に使った固定予測<select value={predictionRunId} onChange={(event) => setPredictionRunId(event.target.value)}>
               <option value="">関連付けなし</option>
               {predictions.map((prediction) => (
-                <option key={prediction.id} value={prediction.id}>
-                  #{prediction.id} {prediction.model_identifier} {prediction.model_version} / {prediction.frozen_at}
+                <option title={prediction.frozen_at} key={prediction.id} value={prediction.id}>
+                  #{prediction.id} {prediction.model_identifier} {prediction.model_version} / {formatJst(prediction.frozen_at)}
                 </option>
               ))}
             </select></label>
             <label>購入額（円）<input type="number" min="100" step="100" value={amountYen} onChange={(event) => setAmountYen(Number(event.target.value))} /></label>
-            <button type="button" onClick={() => void createBet()}>実購入を登録</button>
+            <button type="button" disabled={saving !== null || ledgerRefreshNeeded} onClick={() => void createBet()}>{saving === "bet" ? "登録中…" : "実購入を登録"}</button>
           </div>
           <div className="result-import">
             <label htmlFor={`jra-result-url-${raceId}`}>JRAレース結果URL</label>
             <input id={`jra-result-url-${raceId}`} type="url" value={jraResultUrl} onChange={(event) => setJraResultUrl(event.target.value)} placeholder="https://www.jra.go.jp/JRADB/accessS.html?CNAME=..." />
-            <button type="button" disabled={!jraResultUrl || jraResultLoading} onClick={() => void acquireJraResult()}>{jraResultLoading ? "取得・検証中…" : "JRA結果を取得して精算"}</button>
+            <button type="button" disabled={!jraResultUrl || jraResultLoading || saving !== null || ledgerRefreshNeeded} onClick={() => void acquireJraResult()}>{jraResultLoading ? "取得・検証中…" : "JRA結果を取得して精算"}</button>
           </div>
           <div className="result-import">
+            <CsvImportGuide kind="results" />
             <label htmlFor={`result-csv-${raceId}`}>結果CSVファイル</label>
             <input id={`result-csv-${raceId}`} type="file" accept=".csv,text/csv" onChange={(event) => setResultFile(event.target.files?.[0] ?? null)} />
             {ledger.result_version === null ? (
-              <button type="button" disabled={!resultFile} onClick={() => void importResults()}>結果を取り込んで精算</button>
+              <button type="button" disabled={!resultFile || saving !== null || ledgerRefreshNeeded} onClick={() => void importResults()}>{saving === "import" ? "取込中…" : "結果を取り込んで精算"}</button>
             ) : (
               <>
                 <label>訂正理由<input value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} /></label>
-                <button type="button" disabled={!resultFile || !correctionReason.trim()} onClick={() => void importResults(true)}>訂正版で再精算</button>
+                <button type="button" disabled={!resultFile || !correctionReason.trim() || saving !== null || ledgerRefreshNeeded} onClick={() => void importResults(true)}>{saving === "correct" ? "再精算中…" : "訂正版で再精算"}</button>
               </>
             )}
           </div>
