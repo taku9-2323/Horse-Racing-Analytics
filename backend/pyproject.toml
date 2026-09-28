@@ -16,7 +16,7 @@ dependencies = [
 dev = [
   "httpx2>=2,<3",
   "mypy>=1.15,<2",
-  "pytest>=8.3,<9",
+  "pytest>=8.3,<10",
 ]
 
 [tool.setuptools.packages.find]
