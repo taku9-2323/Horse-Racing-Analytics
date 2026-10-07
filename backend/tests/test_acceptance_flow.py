@@ -161,9 +161,17 @@ def test_multiple_race_acceptance_flow_survives_backup_restore(tmp_path: Path) -
             "profit_yen": 0,
             "return_rate": 1.0,
         }
-        assert expected_evaluation["calibration"]["eligible_prediction_runs"] == 3
+        assert expected_evaluation["calibration_status"] == "multiple_groups"
+        assert expected_evaluation["calibration"] is None
+        win_calibration = next(
+            group for group in expected_evaluation["calibration_groups"]
+            if group["model_identifier"] == "market-baseline" and group["bet_type"] == "win"
+        )
+        assert win_calibration["eligible_prediction_runs"] == 3
         # The scratched runner is preserved in the race but excluded from calibration.
-        assert expected_evaluation["calibration"]["runner_count"] == 14
+        assert win_calibration["runner_observation_count"] == 14
+        assert win_calibration["distinct_race_count"] == 3
+        assert win_calibration["distinct_observation_count"] == 3
         assert expected_evaluation["returns"]["candidate"]["stake_yen"] == 0
         assert expected_evaluation["returns"]["discretionary"] == {
             "stake_yen": 700,

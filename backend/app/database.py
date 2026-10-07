@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, cast
 
 from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
-from app.evaluation import PredictionEvaluationRow, SettlementEvaluationRow
+from app.evaluation import PredictionEvaluationRow, PredictionRunEvaluation, SettlementEvaluationRow
 from app.race_analysis import win_market_baseline
 from app.rule_judgements import INITIAL_RULE, build_runner_judgements
 
@@ -2263,9 +2263,31 @@ class SqliteDatabase:
 
     def get_evaluation_dataset(
         self,
-    ) -> tuple[list[PredictionEvaluationRow], list[SettlementEvaluationRow]]:
+    ) -> tuple[list[PredictionRunEvaluation], list[PredictionEvaluationRow], list[SettlementEvaluationRow]]:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
+            run_rows = connection.execute(
+                """
+                SELECT prediction.id AS prediction_run_id, prediction.race_id,
+                       prediction.input_snapshot_id, prediction.model_identifier,
+                       prediction.model_version, prediction.prediction_kind,
+                       prediction.frozen_at, prediction.status,
+                       prediction.official_evaluation_eligible,
+                       race.race_date, race.racecourse,
+                       MAX(CASE WHEN prediction.prediction_kind = 'market_baseline'
+                                     OR runner_prediction.win_probability IS NOT NULL
+                                THEN 1 ELSE 0 END) AS has_win,
+                       MAX(CASE WHEN prediction.prediction_kind = 'independent'
+                                     AND runner_prediction.place_probability IS NOT NULL
+                                THEN 1 ELSE 0 END) AS has_place
+                FROM prediction_runs AS prediction
+                JOIN races AS race ON race.id = prediction.race_id
+                LEFT JOIN runner_predictions AS runner_prediction
+                  ON runner_prediction.prediction_run_id = prediction.id
+                GROUP BY prediction.id
+                ORDER BY prediction.id
+                """
+            ).fetchall()
             prediction_rows = connection.execute(
                 """
                 WITH ranked_snapshot_runners AS (
@@ -2287,7 +2309,10 @@ class SqliteDatabase:
                        snapshot_runner.win_odds,
                        snapshot_runner.win_odds AS odds_value,
                        snapshot_runner.popularity,
-                       CASE WHEN runner_result.finish_position = 1 THEN 1 ELSE 0 END AS outcome
+                       CASE WHEN runner_result.finish_position = 1 THEN 1 ELSE 0 END AS outcome,
+                       prediction.prediction_kind, prediction.race_id,
+                       prediction.input_snapshot_id, result_version.id AS active_result_version_id,
+                       race.race_date
                 FROM prediction_runs AS prediction
                 JOIN races AS race ON race.id = prediction.race_id
                 JOIN runner_predictions AS runner_prediction
@@ -2314,7 +2339,10 @@ class SqliteDatabase:
                        snapshot_runner.win_odds,
                        snapshot_runner.place_odds_min AS odds_value,
                        snapshot_runner.popularity,
-                       CASE WHEN runner_result.place_payout_per_100 > 0 THEN 1 ELSE 0 END AS outcome
+                       CASE WHEN runner_result.place_payout_per_100 > 0 THEN 1 ELSE 0 END AS outcome,
+                       prediction.prediction_kind, prediction.race_id,
+                       prediction.input_snapshot_id, result_version.id AS active_result_version_id,
+                       race.race_date
                 FROM prediction_runs AS prediction
                 JOIN races AS race ON race.id = prediction.race_id
                 JOIN runner_predictions AS runner_prediction
@@ -2383,18 +2411,44 @@ class SqliteDatabase:
                 for rule_key, version, runners in tags_by_prediction.get(prediction_id, [])
                 if runners is None or horse_number in runners
             ]
+        runs: list[PredictionRunEvaluation] = []
+        for row in run_rows:
+            prediction_kind = str(row["prediction_kind"])
+            if prediction_kind not in ("market_baseline", "independent"):
+                raise ValueError(f"Unsupported prediction kind: {prediction_kind}")
+            runs.append(PredictionRunEvaluation(
+                prediction_run_id=int(row["prediction_run_id"]),
+                race_id=int(row["race_id"]),
+                input_snapshot_id=int(row["input_snapshot_id"]),
+                model_identifier=str(row["model_identifier"]),
+                model_version=str(row["model_version"]),
+                prediction_kind=cast(Literal["market_baseline", "independent"], prediction_kind),
+                frozen_at=str(row["frozen_at"]), race_date=str(row["race_date"]),
+                racecourse=str(row["racecourse"]), status=str(row["status"]),
+                official_evaluation_eligible=bool(row["official_evaluation_eligible"]),
+                has_win=bool(row["has_win"]), has_place=bool(row["has_place"]),
+            ))
         predictions: list[PredictionEvaluationRow] = []
         for row in prediction_rows:
             prediction_id = int(row["prediction_run_id"])
             prediction_bet_type = str(row["bet_type"])
             if prediction_bet_type not in ("win", "place"):
                 raise ValueError(f"Unsupported prediction type: {prediction_bet_type}")
+            prediction_kind = str(row["prediction_kind"])
+            if prediction_kind not in ("market_baseline", "independent"):
+                raise ValueError(f"Unsupported prediction kind: {prediction_kind}")
             predictions.append(PredictionEvaluationRow(
                 prediction_run_id=prediction_id,
+                prediction_kind=cast(Literal["market_baseline", "independent"], prediction_kind),
                 model_identifier=str(row["model_identifier"]),
                 model_version=str(row["model_version"]),
                 frozen_at=str(row["frozen_at"]),
                 bet_type=cast(Literal["win", "place"], prediction_bet_type),
+                race_id=int(row["race_id"]),
+                input_snapshot_id=int(row["input_snapshot_id"]),
+                active_result_version_id=int(row["active_result_version_id"]),
+                horse_number=int(row["horse_number"]),
+                race_date=str(row["race_date"]),
                 racecourse=str(row["racecourse"]),
                 odds_value=float(row["odds_value"]),
                 popularity=int(row["popularity"]),
@@ -2437,4 +2491,4 @@ class SqliteDatabase:
                 payout_yen=int(row["payout_yen"]),
                 refund_yen=int(row["refund_yen"]),
             ))
-        return predictions, settlements
+        return runs, predictions, settlements

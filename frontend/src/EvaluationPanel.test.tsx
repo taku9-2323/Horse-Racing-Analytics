@@ -5,6 +5,8 @@ import EvaluationPanel from "./EvaluationPanel";
 
 
 const report = {
+  calibration_status: "single_group" as const,
+  calibration_reason: null,
   filters: {
     model_identifier: null, model_version: null, tag_rule_key: null, tag_version: null,
     racecourse: null, bet_type: null, odds_min: null, odds_max: null,
@@ -26,6 +28,28 @@ const report = {
         average_predicted_probability: 5 / 11, actual_win_rate: 1, small_sample: true },
     ],
   },
+  calibration_groups: [{
+    model_identifier: "market-baseline", model_version: "1.0", bet_type: "win" as const,
+    eligible_prediction_runs: 1, excluded_prediction_runs: 2,
+    raw_unique_run_count: 3, eligible_candidate_run_count: 1,
+    capability_qualified_run_count: 1, selected_prediction_run_count: 1,
+    ineligible_excluded_run_count: 2, unsupported_bet_excluded_run_count: 0,
+    duplicate_excluded_run_count: 0, race_date_from: "2026-08-30", race_date_to: "2026-08-30",
+    prediction_frozen_from: "2026-08-30T04:55:00Z", prediction_frozen_to: "2026-08-30T04:55:00Z",
+    distinct_race_count: 1, distinct_observation_count: 1, runner_observation_count: 5,
+    brier_score: 19 / 242,
+    bands: [
+      { lower_bound: 0, upper_bound: 0.1, count: 2,
+        average_predicted_probability: 0.06818, actual_win_rate: 0 },
+      { lower_bound: 0.4, upper_bound: 0.5, count: 1,
+        average_predicted_probability: 5 / 11, actual_win_rate: 1 },
+    ],
+    market_comparison_status: "not_applicable" as const,
+    market_comparison_reason: "市場基準groupは独立モデルとの比較対象として扱いません。",
+    market_comparisons: [],
+    uncertainty_status: "not_estimated" as const, uncertainty_interval: null,
+    uncertainty_reason: "レース内相関を考慮した不確実性推定法は未実装・未検証です。",
+  }],
   returns: {
     candidate: { stake_yen: 0, payout_yen: 0, refund_yen: 0, profit_yen: 0, return_rate: null },
     discretionary: { stake_yen: 200, payout_yen: 840, refund_yen: 0, profit_yen: 640, return_rate: 4.2 },
@@ -37,7 +61,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 
 describe("evaluation panel", () => {
-  it("shows calibration, small-sample bands, separated returns, and applies every filter", async () => {
+  it("shows calibration groups and separated returns, and applies every filter", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(report), {
       status: 200, headers: { "Content-Type": "application/json" },
     }));
@@ -47,11 +71,12 @@ describe("evaluation panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "成績を表示" }));
 
     expect(await screen.findByText("0.0785")).toBeTruthy();
-    expect(screen.getByText("公式評価対象 1予測 / 5頭")).toBeTruthy();
-    expect(screen.getByText("公式評価対象外 2予測")).toBeTruthy();
-    const calibration = screen.getByRole("table", { name: "確率帯別の校正" });
+    expect(screen.getByText("market-baseline / 1.0 / 単勝")).toBeTruthy();
+    expect(screen.getByText("run総数 3 / 公式対象候補 1 / 券種対応候補 1 / 採用 1 / 除外（公式対象外 2・券種非対応 0・重複 0）")).toBeTruthy();
+    const calibration = screen.getByRole("table", { name: /確率帯別の校正/ });
     expect(within(calibration).getByText("40–50%未満")).toBeTruthy();
-    expect(within(calibration).getAllByText("少数標本")).toHaveLength(2);
+    expect(within(calibration).queryByText("十分")).toBeNull();
+    expect(screen.getByText(/レース内相関を考慮した不確実性推定法/)).toBeTruthy();
     const returns = screen.getByRole("region", { name: "購入区分別収支" });
     expect(within(returns).getByText("候補内実購入")).toBeTruthy();
     expect(within(returns).getByText("候補外裁量")).toBeTruthy();
@@ -80,12 +105,85 @@ describe("evaluation panel", () => {
       prediction_frozen_to: new Date("2026-08-30T14:01").toISOString(),
     });
   });
+
+  it("shows each market baseline version separately without pooling their scores", async () => {
+    const baseGroup = report.calibration_groups[0];
+    const comparison = (baseline_version: string, market_brier_score: number) => ({
+      baseline_version, status: "available" as const, reason: null,
+      model_brier_score: 0.04, market_brier_score, brier_difference: 0.04 - market_brier_score,
+      matched_runner_observation_count: 1, matched_race_count: 1, matched_observation_count: 1,
+      raw_unique_run_count: 1, eligible_candidate_run_count: 1, capability_qualified_run_count: 1,
+      selected_run_count: 1, ineligible_excluded_run_count: 0,
+      unsupported_bet_excluded_run_count: 0, duplicate_excluded_run_count: 0,
+    });
+    const independentReport = {
+      ...report,
+      calibration_groups: [{
+        ...baseGroup, model_identifier: "model-a", model_version: "independent-v7",
+        market_comparison_status: "available" as const, market_comparison_reason: null,
+        market_comparisons: [comparison("baseline-1", 0.25), comparison("baseline-2", 0.64)],
+      }],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(independentReport)));
+    render(<EvaluationPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "成績を表示" }));
+    expect(await screen.findByText("model-a / independent-v7 / 単勝")).toBeTruthy();
+    expect(screen.getByRole("article", { name: "市場基準版 baseline-1" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: "市場基準版 baseline-2" })).toBeTruthy();
+    expect(screen.getByText(/市場 Brier 0\.2500/)).toBeTruthy();
+    expect(screen.getByText(/市場 Brier 0\.6400/)).toBeTruthy();
+  });
+
+  it("explains when a baseline is absent and when place has no market comparison", async () => {
+    const baseGroup = report.calibration_groups[0];
+    const noBaseline = {
+      ...baseGroup, model_identifier: "model-a", model_version: "model-v1",
+      market_comparison_status: "no_baseline" as const,
+      market_comparison_reason: "有効な市場基準runがありません。", market_comparisons: [],
+    };
+    const place = {
+      ...noBaseline, bet_type: "place" as const,
+      market_comparison_status: "not_applicable" as const,
+      market_comparison_reason: "複勝には比較対象の市場確率がありません。",
+    };
+    const noBaselineReport = {
+      ...report, calibration_status: "multiple_groups" as const,
+      calibration_reason: "モデル版・券種ごとに分けて集計しています。",
+      calibration_groups: [noBaseline, place],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(noBaselineReport)));
+    render(<EvaluationPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "成績を表示" }));
+    expect(await screen.findByText("有効な市場基準runがありません。")).toBeTruthy();
+    expect(screen.getByText("複勝には比較対象の市場確率がありません。")).toBeTruthy();
+    expect(screen.queryByRole("article", { name: /市場基準版/ })).toBeNull();
+  });
+
+  it("explains an empty result without rendering a calibration score", async () => {
+    const emptyReport = {
+      ...report,
+      calibration: null,
+      calibration_status: "no_groups" as const,
+      calibration_reason: "フィルターに一致する予測runがありません。",
+      calibration_groups: [],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(emptyReport)));
+    render(<EvaluationPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "成績を表示" }));
+
+    expect(await screen.findByText("フィルターに一致する予測runがありません。")).toBeTruthy();
+    expect(screen.queryByText("Brierスコア")).toBeNull();
+    expect(screen.queryByRole("table", { name: /確率帯別の校正/ })).toBeNull();
+  });
 });
 
 const response = (body: object, status = 200) => new Response(JSON.stringify(body), { status });
 
 it("keeps results paired with applied filters through edits, failures and reset", async () => {
-  const filtered = { ...report, calibration: { ...report.calibration, brier_score: 0.25 } };
+  const filtered = {
+    ...report,
+    calibration_groups: [{ ...report.calibration_groups[0], brier_score: 0.25 }],
+  };
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(response(report))
     .mockResolvedValueOnce(response(filtered))

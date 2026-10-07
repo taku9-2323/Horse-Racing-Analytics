@@ -168,3 +168,51 @@ def test_independent_probabilities_cannot_be_submitted_as_market_values(tmp_path
 
     assert rejected_market_field.status_code == 422
     assert rejected_sum.status_code == 422
+
+
+def test_evaluation_matches_independent_model_to_market_version_with_different_name(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        tmp_path / "market-pairing.sqlite3",
+        now_provider=lambda: datetime(2026, 8, 30, 5, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        race, snapshot = prepare_snapshot(client)
+        market = client.post(
+            f"/api/odds-snapshots/{snapshot['id']}/freeze",
+            json={"model_identifier": "market-baseline", "model_version": "baseline-v3"},
+        )
+        independent = client.post(
+            f"/api/odds-snapshots/{snapshot['id']}/independent-predictions/freeze",
+            json={**fake_model_payload(), "model_version": "independent-v7"},
+        )
+        assert market.status_code == 201, market.text
+        assert independent.status_code == 201, independent.text
+        assert client.post(
+            f"/api/races/{race['race_id']}/results/import",
+            content=RESULT_CSV, headers={"Content-Type": "text/csv"},
+        ).status_code == 201
+        response = client.get("/api/evaluation", params={
+            "model_identifier": "fake-independent-model",
+            "model_version": "independent-v7", "bet_type": "win",
+        })
+
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["calibration_status"] == "single_group"
+    assert report["calibration"] is not None
+    group = report["calibration_groups"][0]
+    assert (group["model_identifier"], group["model_version"], group["bet_type"]) == (
+        "fake-independent-model", "independent-v7", "win",
+    )
+    assert group["market_comparison_status"] == "available"
+    assert group["market_comparison_reason"] is None
+    assert len(group["market_comparisons"]) == 1
+    comparison = group["market_comparisons"][0]
+    assert comparison["baseline_version"] == "baseline-v3"
+    assert comparison["status"] == "available"
+    assert comparison["matched_runner_observation_count"] == 5
+    assert comparison["matched_race_count"] == 1
+    assert comparison["matched_observation_count"] == 1

@@ -18,6 +18,8 @@ type EvaluationReport = {
     racecourses: string[];
     bet_types: Array<"win" | "place">;
   };
+  calibration_status: "no_groups" | "single_group" | "multiple_groups";
+  calibration_reason: string | null;
   calibration: {
     eligible_prediction_runs: number;
     excluded_prediction_runs: number;
@@ -31,7 +33,59 @@ type EvaluationReport = {
       actual_win_rate: number | null;
       small_sample: boolean;
     }>;
-  };
+  } | null;
+  calibration_groups: Array<{
+    model_identifier: string;
+    model_version: string;
+    bet_type: "win" | "place";
+    eligible_prediction_runs: number;
+    excluded_prediction_runs: number;
+    raw_unique_run_count: number;
+    eligible_candidate_run_count: number;
+    capability_qualified_run_count: number;
+    selected_prediction_run_count: number;
+    ineligible_excluded_run_count: number;
+    unsupported_bet_excluded_run_count: number;
+    duplicate_excluded_run_count: number;
+    race_date_from: string | null;
+    race_date_to: string | null;
+    prediction_frozen_from: string | null;
+    prediction_frozen_to: string | null;
+    distinct_race_count: number;
+    distinct_observation_count: number;
+    runner_observation_count: number;
+    brier_score: number | null;
+    bands: Array<{
+      lower_bound: number;
+      upper_bound: number;
+      count: number;
+      average_predicted_probability: number | null;
+      actual_win_rate: number | null;
+    }>;
+    market_comparison_status: "available" | "no_baseline" | "no_common_observations" | "not_applicable";
+    market_comparison_reason: string | null;
+    market_comparisons: Array<{
+      baseline_version: string | null;
+      status: "available" | "no_baseline" | "no_common_observations" | "not_applicable";
+      reason: string | null;
+      model_brier_score: number | null;
+      market_brier_score: number | null;
+      brier_difference: number | null;
+      matched_runner_observation_count: number;
+      matched_race_count: number;
+      matched_observation_count: number;
+      raw_unique_run_count: number;
+      eligible_candidate_run_count: number;
+      capability_qualified_run_count: number;
+      selected_run_count: number;
+      ineligible_excluded_run_count: number;
+      unsupported_bet_excluded_run_count: number;
+      duplicate_excluded_run_count: number;
+    }>;
+    uncertainty_status: "not_estimated";
+    uncertainty_interval: null;
+    uncertainty_reason: string;
+  }>;
   returns: { candidate: Totals; discretionary: Totals };
 };
 
@@ -68,6 +122,7 @@ const describeFilters = (selected: FilterState) => Object.entries(selected)
   }).join("、") || "すべて";
 const percent = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(2)}%`;
 const yen = (value: number | null) => value === null ? "—" : `¥${value.toLocaleString("ja-JP")}`;
+const span = (from: string | null, to: string | null) => from === null || to === null ? "—" : from === to ? from : `${from} ～ ${to}`;
 
 function EvaluationPanel() {
   const requestVersion = useRef(0);
@@ -216,25 +271,47 @@ function EvaluationPanel() {
           {unapplied && <p role="status">未適用の変更があります。</p>}
           {loading && <p role="status">再集計中です。表示中の結果は適用済み条件の集計です。</p>}
           <p aria-label="適用済み条件">適用済み条件：{result && describeFilters(result.applied)}</p>
-          <div className="evaluation-summary">
-            <article><span>Brierスコア</span><strong>{report.calibration.brier_score?.toFixed(4) ?? "—"}</strong></article>
-            <article><span>対象</span><strong>公式評価対象 {report.calibration.eligible_prediction_runs}予測 / {report.calibration.runner_count}頭</strong></article>
-            <article><span>除外</span><strong>公式評価対象外 {report.calibration.excluded_prediction_runs}予測</strong></article>
-          </div>
+          {report.calibration_reason && <p role="status">{report.calibration_reason}</p>}
+          {report.calibration_groups.map((group) => (
+            <section className="evaluation-group" aria-label={`${group.model_identifier} ${group.model_version} ${group.bet_type === "win" ? "単勝" : "複勝"}`} key={`${group.model_identifier}-${group.model_version}-${group.bet_type}`}>
+              <h3>{group.model_identifier} / {group.model_version} / {group.bet_type === "win" ? "単勝" : "複勝"}</h3>
+              <div className="evaluation-summary">
+                <article><span>Brierスコア</span><strong>{group.brier_score?.toFixed(4) ?? "—"}</strong></article>
+                <article><span>採用run</span><strong>{group.selected_prediction_run_count}</strong></article>
+                <article><span>run・馬の観測数</span><strong>{group.runner_observation_count}</strong></article>
+                <article><span>対象race数</span><strong>{group.distinct_race_count}</strong></article>
+                <article><span>race/snapshot観測数</span><strong>{group.distinct_observation_count}</strong></article>
+              </div>
+              <p>対象race日: {span(group.race_date_from, group.race_date_to)} / 予測固定時刻: {span(group.prediction_frozen_from, group.prediction_frozen_to)}</p>
+              <p>run総数 {group.raw_unique_run_count} / 公式対象候補 {group.eligible_candidate_run_count} / 券種対応候補 {group.capability_qualified_run_count} / 採用 {group.selected_prediction_run_count} / 除外（公式対象外 {group.ineligible_excluded_run_count}・券種非対応 {group.unsupported_bet_excluded_run_count}・重複 {group.duplicate_excluded_run_count}）</p>
+              <p>不確実性: 推定なし。{group.uncertainty_reason}</p>
+              <section aria-label="市場基準との比較">
+                <h4>市場基準との共通標本比較</h4>
+                {group.market_comparison_reason && <p role="status">{group.market_comparison_reason}</p>}
+                {group.market_comparisons.map((comparison) => (
+                  <article aria-label={`市場基準版 ${comparison.baseline_version ?? "なし"}`} key={comparison.baseline_version ?? comparison.status}>
+                    <h5>市場基準版 {comparison.baseline_version ?? "なし"}</h5>
+                    {comparison.reason && <p>{comparison.reason}</p>}
+                    <p>共通run・馬の観測 {comparison.matched_runner_observation_count} / race {comparison.matched_race_count} / race-snapshot {comparison.matched_observation_count}</p>
+                    <p>モデル Brier {comparison.model_brier_score?.toFixed(4) ?? "—"} / 市場 Brier {comparison.market_brier_score?.toFixed(4) ?? "—"} / 差（モデル−市場） {comparison.brier_difference?.toFixed(4) ?? "—"}</p>
+                  </article>
+                ))}
+              </section>
+              <div className="table-wrap">
+                <table aria-label={`確率帯別の校正 ${group.model_identifier} ${group.model_version} ${group.bet_type}`}>
+                  <thead><tr><th>確率帯</th><th>run・馬の観測数</th><th>平均予測確率</th><th>実的中率</th></tr></thead>
+                  <tbody>{group.bands.filter((band) => band.count > 0).map((band) => (
+                    <tr key={band.lower_bound}>
+                      <td>{Math.round(band.lower_bound * 100)}–{Math.round(band.upper_bound * 100)}%未満</td>
+                      <td>{band.count}</td><td>{percent(band.average_predicted_probability)}</td>
+                      <td>{percent(band.actual_win_rate)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </section>
+          ))}
           <p className="evaluation-note">市場基準は比較用の投票シェアであり、利益優位性を示す予測ではありません。複勝のオッズ帯は購入時に保存した下限オッズで判定します。</p>
-
-          <div className="table-wrap">
-            <table aria-label="確率帯別の校正">
-              <thead><tr><th>確率帯</th><th>件数</th><th>平均予測確率</th><th>実的中率</th><th>標本</th></tr></thead>
-              <tbody>{report.calibration.bands.filter((band) => band.count > 0).map((band) => (
-                <tr key={band.lower_bound}>
-                  <td>{Math.round(band.lower_bound * 100)}–{Math.round(band.upper_bound * 100)}%未満</td>
-                  <td>{band.count}</td><td>{percent(band.average_predicted_probability)}</td>
-                  <td>{percent(band.actual_win_rate)}</td><td>{band.small_sample ? "少数標本" : "十分"}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
           <section className="evaluation-returns" aria-label="購入区分別収支">
             {totalsCard("候補内実購入", report.returns.candidate)}
             {totalsCard("候補外裁量", report.returns.discretionary)}
