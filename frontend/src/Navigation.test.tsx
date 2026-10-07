@@ -25,6 +25,7 @@ function mockApi(extra?: (url: string) => Promise<Response> | undefined) {
     if (url === "/api/races/1") return Promise.resolve(json(analysis(1)));
     if (url === "/api/races/2") return Promise.resolve(json(analysis(2)));
     if (url.startsWith("/api/evaluation")) return Promise.resolve(json(report));
+    if (url.startsWith("/api/rule-performance")) return Promise.resolve(json({ filters: {}, groups: [], disclaimer: "保存済み判定の記述集計です。" }));
     return Promise.resolve(json([]));
   });
   vi.stubGlobal("fetch", fetchMock); return fetchMock;

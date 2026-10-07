@@ -225,6 +225,30 @@ th { color: #8f9b94; font-weight: 500; }
 .evaluation-returns strong { grid-column: 1 / -1; color: #c6a766; }
 .evaluation-returns span { color: #aeb8b2; }
 
+.rule-performance-panel { margin-top: 24px; }
+.rule-performance-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; padding: 24px 28px; }
+.rule-performance-filters label { display: grid; gap: 5px; color: #aeb8b2; font-size: 0.72rem; }
+.rule-performance-filters input, .rule-performance-filters select { min-width: 0; padding: 8px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
+.rule-performance-filters button { align-self: end; }
+.rule-performance-group { margin: 20px 28px; padding: 18px; border: 1px solid rgba(220, 204, 170, 0.18); background: rgba(17, 24, 21, 0.42); }
+.rule-performance-group h3 { margin: 0 0 14px; color: #dcccaa; font-size: 1rem; }
+.rule-performance-period, .rule-performance-exclusions, .rule-performance-empty, .rule-performance-disclaimer { color: #aeb8b2; font-size: 0.78rem; }
+.rule-performance-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.rule-performance-counts div { padding: 12px; border: 1px solid rgba(220, 204, 170, 0.12); }
+.rule-performance-counts dt, .rule-performance-bet dt { color: #8f9b94; font-size: 0.72rem; }
+.rule-performance-counts dd, .rule-performance-bet dd { margin: 5px 0 0; color: #dcccaa; font-size: 0.86rem; }
+.rule-performance-bets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rule-performance-bet { padding: 14px; border: 1px solid rgba(220, 204, 170, 0.14); }
+.rule-performance-bet h4 { margin: 0 0 10px; color: #c6a766; }
+.rule-performance-bet dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.rule-performance-bet p { color: #aeb8b2; font-size: 0.76rem; }
+.rule-performance-run-details { margin: 14px 0; color: #aeb8b2; font-size: 0.78rem; }
+.rule-performance-run-details summary { cursor: pointer; color: #dcccaa; }
+.rule-performance-run-table-wrap { overflow-x: auto; margin-top: 10px; }
+.rule-performance-run-details table { width: 100%; border-collapse: collapse; text-align: left; }
+.rule-performance-run-details th, .rule-performance-run-details td { padding: 8px 10px; border-bottom: 1px solid rgba(220, 204, 170, 0.12); white-space: nowrap; }
+.rule-performance-disclaimer { padding: 18px 28px; }
+
 .maintenance-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 24px 28px; }
 .meeting-week-actions {
   display: flex;
@@ -504,10 +528,13 @@ footer {
   .betting-heading, .decision-totals { flex-direction: column; }
   .bet-form, .result-import, .settlement-summary { grid-template-columns: 1fr; }
   .evaluation-empty { align-items: stretch; flex-direction: column; }
-  .evaluation-filters, .evaluation-summary, .evaluation-returns { grid-template-columns: 1fr; }
+  .evaluation-filters, .evaluation-summary, .evaluation-returns,
+  .rule-performance-filters, .rule-performance-counts, .rule-performance-bets { grid-template-columns: 1fr; }
   .evaluation-group { margin: 16px 20px; padding: 14px; }
   .evaluation-summary article + article { border-top: 1px solid rgba(220, 204, 170, 0.14); border-left: 0; }
   .evaluation-returns article { grid-template-columns: 1fr; }
+  .rule-performance-group { margin: 16px 20px; padding: 14px; }
+  .rule-performance-bet dl { grid-template-columns: 1fr; }
   .maintenance-actions, .backup-list { padding-right: 20px; padding-left: 20px; }
   .meeting-week-actions { align-items: stretch; flex-direction: column; padding: 20px; }
   .meeting-week-actions button { width: 100%; }

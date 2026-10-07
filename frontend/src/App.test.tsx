@@ -372,6 +372,7 @@ describe("analysis tag management", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(healthResponse("ok"))
       .mockResolvedValueOnce(emptyRaceListResponse())
+      .mockResolvedValueOnce(jsonResponse({ filters: {}, groups: [], disclaimer: "保存済み判定の記述集計です。" }))
       .mockResolvedValueOnce(jsonResponse([tag]))
       .mockResolvedValueOnce(jsonResponse(enabled))
       .mockResolvedValueOnce(jsonResponse([{

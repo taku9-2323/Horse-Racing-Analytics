@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 from threading import Lock, Thread
 from time import monotonic, sleep
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Annotated, Any, Callable, Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
@@ -41,6 +41,7 @@ from app.jra_acquisition import (
     resolve_odds_observed_at,
 )
 from app.evaluation import EvaluationFilters, EvaluationReport, build_evaluation_report
+from app.rule_performance import RulePerformanceReport, build_rule_performance_report
 from app.market_attention import MarketAttentionRanking, build_market_attention_ranking
 from app.rule_judgements import (
     CorrectRuleJudgementRequest, FreezeRuleJudgementRequest, RuleJudgementRun, RuleVersion,
@@ -783,6 +784,48 @@ def create_app(
     @app.get("/api/evaluation", response_model=EvaluationReport)
     def get_evaluation(filters: Annotated[EvaluationFilters, Query()]) -> EvaluationReport:
         return build_evaluation_report(*database.get_evaluation_dataset(), filters)
+
+    @app.get("/api/rule-performance", response_model=RulePerformanceReport)
+    def get_rule_performance(
+        race_date_from: date | None = None,
+        race_date_to: date | None = None,
+        frozen_at_from: datetime | None = None,
+        frozen_at_to: datetime | None = None,
+        rule_version_id: int | None = None,
+    ) -> RulePerformanceReport:
+        if race_date_from is not None and race_date_to is not None and race_date_from > race_date_to:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_race_date_range", "message": "開催日の範囲を確認してください。"},
+            )
+        for value in (frozen_at_from, frozen_at_to):
+            if value is not None and value.utcoffset() is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "timezone_required", "message": "判定固定日時はUTC offset付きで指定してください。"},
+                )
+        if frozen_at_from is not None and frozen_at_to is not None:
+            if frozen_at_from.astimezone(timezone.utc) > frozen_at_to.astimezone(timezone.utc):
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_frozen_at_range", "message": "判定固定日時の範囲を確認してください。"},
+                )
+        versions, rows = database.get_rule_performance_dataset()
+        if rule_version_id is not None and not any(
+            int(version["id"]) == rule_version_id for version in versions
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "rule_version_not_found", "message": "ルール版が見つかりません。"},
+            )
+        return build_rule_performance_report(
+            versions, rows,
+            race_date_from=race_date_from,
+            race_date_to=race_date_to,
+            frozen_at_from=frozen_at_from,
+            frozen_at_to=frozen_at_to,
+            rule_version_id=rule_version_id,
+        )
 
     @app.post("/api/data/backups", response_model=BackupSummary, status_code=201)
     def create_backup() -> BackupSummary:

@@ -961,6 +961,66 @@ class SqliteDatabase:
             connection.row_factory = sqlite3.Row
             return connection.execute("SELECT * FROM rule_versions ORDER BY id").fetchall()
 
+    def get_rule_performance_dataset(
+        self,
+    ) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+        """Read saved rule runs and their exact active result version for reporting."""
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            versions = connection.execute(
+                "SELECT * FROM rule_versions ORDER BY id"
+            ).fetchall()
+            runs = connection.execute(
+                """WITH active_results AS (
+                       SELECT race_id, COUNT(*) AS active_count, MAX(id) AS result_version_id
+                       FROM result_versions WHERE status='active' GROUP BY race_id
+                   )
+                   SELECT
+                       rule.id AS rule_version_id, rule.rule_key, rule.version AS rule_version,
+                       rule.title AS rule_title,
+                       run.id AS judgement_run_id, run.race_id, run.input_snapshot_id,
+                       run.judgement_as_of, run.frozen_at, run.status AS run_status,
+                       run.invalidation_reason, run.replaces_judgement_id,
+                       run.official_pre_race_eligible, run.exclusion_reason,
+                       race.race_date, race.racecourse, race.race_number, race.start_utc,
+                       race.field_size,
+                       (SELECT COUNT(*) FROM runners AS roster
+                        WHERE roster.race_id=run.race_id) AS roster_runner_count,
+                       result.id AS active_result_version_id,
+                       result.version AS active_result_version,
+                       result.correction_reason AS result_correction_reason,
+                       COALESCE(active.active_count, 0) AS active_result_version_count,
+                       (SELECT COUNT(*) FROM runner_results AS result_row
+                        WHERE result_row.result_version_id=result.id) AS result_runner_count,
+                       (SELECT COUNT(*) FROM runner_results AS result_row
+                        JOIN runners AS roster ON roster.race_id=run.race_id
+                                              AND roster.horse_number=result_row.horse_number
+                        WHERE result_row.result_version_id=result.id) AS matched_result_runner_count,
+                       EXISTS (
+                           SELECT 1 FROM jra_result_observations AS observation
+                           WHERE observation.result_version_id=result.id
+                             AND observation.validation_status='valid'
+                       ) AS has_valid_result_observation,
+                       judged.horse_number, judged.horse_name, judged.judgement,
+                       result_row.status AS result_runner_status,
+                       result_row.finish_position,
+                       result_row.win_payout_per_100,
+                       result_row.place_payout_per_100
+                   FROM rule_judgement_runs AS run
+                   JOIN races AS race ON race.id=run.race_id
+                   JOIN rule_versions AS rule ON rule.id=run.rule_version_id
+                   LEFT JOIN active_results AS active ON active.race_id=run.race_id
+                   LEFT JOIN result_versions AS result ON result.id=active.result_version_id
+                   LEFT JOIN runner_rule_judgements AS judged
+                     ON judged.judgement_run_id=run.id
+                   LEFT JOIN runner_results AS result_row
+                     ON result_row.result_version_id=result.id
+                    AND result_row.horse_number=judged.horse_number
+                   ORDER BY rule.id, race.race_date, run.race_id,
+                            run.frozen_at, run.id, judged.horse_number"""
+            ).fetchall()
+            return versions, runs
+
     def create_rule_judgement(self, race_id: int, snapshot_id: int, rule_version_id: int,
                               judgement_as_of: str, frozen_at: str, replaces_id: int | None = None,
                               reason: str | None = None) -> int:

@@ -7,6 +7,7 @@ import BettingPanel from "./BettingPanel";
 import DataMaintenancePanel from "./DataMaintenancePanel";
 import JraRaceAcquisitionPanel from "./JraRaceAcquisitionPanel";
 import EvaluationPanel from "./EvaluationPanel";
+import RulePerformancePanel from "./RulePerformancePanel";
 import MarketAttentionPanel from "./MarketAttentionPanel";
 import RuleJudgementPanel from "./RuleJudgementPanel";
 import MarketRuleComparisonPanel from "./MarketRuleComparisonPanel";
@@ -390,7 +391,8 @@ function AppContent() {
         <AnalysisTagsPanel />
       </section>
 
-      <EvaluationPanel /></>}
+      <EvaluationPanel />
+      <RulePerformancePanel /></>}
 
       {activeArea === "settings" && <DataMaintenancePanel />}
 
