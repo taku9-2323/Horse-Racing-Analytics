@@ -208,7 +208,13 @@ th { color: #8f9b94; font-weight: 500; }
 .evaluation-filters label { display: grid; gap: 5px; color: #aeb8b2; font-size: 0.72rem; }
 .evaluation-filters select, .evaluation-filters input { min-width: 0; padding: 8px; border: 1px solid rgba(220, 204, 170, 0.25); color: #f4f0e8; background: #111815; }
 .evaluation-filters button { align-self: end; }
-.evaluation-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid rgba(220, 204, 170, 0.14); border-bottom: 1px solid rgba(220, 204, 170, 0.14); }
+.evaluation-group { margin: 20px 28px; padding: 18px; border: 1px solid rgba(220, 204, 170, 0.18); background: rgba(17, 24, 21, 0.42); }
+.evaluation-group h3 { margin: 0 0 14px; color: #dcccaa; font-size: 1rem; }
+.evaluation-group h4 { margin: 16px 0 8px; color: #c6a766; font-size: 0.9rem; }
+.evaluation-group h5 { margin: 0 0 8px; color: #dcccaa; font-size: 0.84rem; }
+.evaluation-group > p, .evaluation-group section > p, .evaluation-group section > article { color: #aeb8b2; font-size: 0.78rem; }
+.evaluation-group section > article { margin: 10px 0; padding: 12px; border: 1px solid rgba(220, 204, 170, 0.14); }
+.evaluation-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid rgba(220, 204, 170, 0.14); border-bottom: 1px solid rgba(220, 204, 170, 0.14); }
 .evaluation-summary article { display: grid; gap: 8px; padding: 22px 28px; }
 .evaluation-summary article + article { border-left: 1px solid rgba(220, 204, 170, 0.14); }
 .evaluation-summary span { color: #8f9b94; font-size: 0.74rem; }
@@ -499,6 +505,7 @@ footer {
   .bet-form, .result-import, .settlement-summary { grid-template-columns: 1fr; }
   .evaluation-empty { align-items: stretch; flex-direction: column; }
   .evaluation-filters, .evaluation-summary, .evaluation-returns { grid-template-columns: 1fr; }
+  .evaluation-group { margin: 16px 20px; padding: 14px; }
   .evaluation-summary article + article { border-top: 1px solid rgba(220, 204, 170, 0.14); border-left: 0; }
   .evaluation-returns article { grid-template-columns: 1fr; }
   .maintenance-actions, .backup-list { padding-right: 20px; padding-left: 20px; }
