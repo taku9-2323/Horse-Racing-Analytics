@@ -1,9 +1,10 @@
 import { formatJst } from "./JstTimestamp";
 import JstTimestamp from "./JstTimestamp";
 import { useState } from "react";
+import RuleConditionList, { type RuleCondition } from "./RuleConditionList";
 
 type Option = { id: number; observed_at?: string | null; title?: string; version?: number };
-type Row = { horse_number: number; horse_name: string; market_rank: number | null; normalized_win_market_share: number | null; market_reason: string; rule_judgement: string | null; rule_reason: string; missing_reasons: string[] };
+type Row = { horse_number: number; horse_name: string; market_rank: number | null; normalized_win_market_share: number | null; market_reason: string; rule_judgement: string | null; rule_reason: string; rule_conditions?: RuleCondition[]; missing_reasons: string[] };
 type Comparison = { state: "available" | "odds_not_registered" | "judgement_not_generated" | "rule_version_mismatch"; next_action: string | null; observed_at: string | null; received_at: string | null; fixed_state: "not_generated" | "fixed" | "invalidated" | "post_start"; official_pre_race_eligible: boolean; rows: Row[]; disclaimer: string };
 
 const fixedLabel = { not_generated: "未固定", fixed: "固定済み", invalidated: "無効化済み", post_start: "発走後作成" } as const;
@@ -47,7 +48,7 @@ export default function MarketRuleComparisonPanel({ raceId }: { raceId: number }
       <p><b>{fixedLabel[comparison.fixed_state]}</b>{comparison.official_pre_race_eligible ? " / 公式な事前判定" : ""} / 観測 <JstTimestamp value={comparison.observed_at} unknown="観測時刻不明" /> / 受付 <JstTimestamp value={comparison.received_at} /></p>
       {comparison.next_action && <p role="status">{comparison.next_action}</p>}
       {comparison.rows.length > 0 && <div className="table-wrap"><table><thead><tr><th>馬番・馬名</th><th>市場順位・シェア</th><th>市場の根拠</th><th>ルール判定</th><th>判定理由・欠損</th></tr></thead><tbody>
-        {comparison.rows.map((row) => <tr key={row.horse_number}><td>{row.horse_number} {row.horse_name}</td><td>{row.market_rank === null ? "順位なし" : `${row.market_rank}位 / ${((row.normalized_win_market_share ?? 0) * 100).toFixed(2)}%`}</td><td>{row.market_reason}</td><td>{row.rule_judgement ?? "未生成"}</td><td>{[row.rule_reason, ...row.missing_reasons].join(" / ")}</td></tr>)}
+        {comparison.rows.map((row) => <tr key={row.horse_number}><td>{row.horse_number} {row.horse_name}</td><td>{row.market_rank === null ? "順位なし" : `${row.market_rank}位 / ${((row.normalized_win_market_share ?? 0) * 100).toFixed(2)}%`}</td><td>{row.market_reason}</td><td>{row.rule_judgement ?? "未生成"}</td><td>{row.rule_conditions && row.rule_conditions.length > 0 ? <RuleConditionList conditions={row.rule_conditions} /> : row.rule_reason}{row.missing_reasons.length > 0 && ` / ${row.missing_reasons.join(" / ")}`}</td></tr>)}
       </tbody></table></div>}
       <p className="empty-note">{comparison.disclaimer}</p>
     </>}

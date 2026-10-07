@@ -79,7 +79,27 @@ it("opens the fixed decision detail and restores list selections on back", async
     runners: [{ horse_number: 1, horse_name: "アカツキ", win_odds: 2,
       place_odds_min: 1.2, place_odds_max: 1.5, market_rank: 1,
       normalized_win_market_share: .31, rule_judgement: "注目",
-      rule_reason: "市場順位が2位以内 / 単勝オッズが10.0以下", missing_reasons: [] }],
+      rule_reason: "市場順位: 達成（実測値1位 / 条件2位以内） / 単勝オッズ: 達成（実測値2.0 / 条件10.0以下）",
+      rule_conditions: [
+        { field: "market_rank", operator: "lte", threshold: 2, state: "satisfied", observed_value: 1 },
+        { field: "win_odds", operator: "lte", threshold: 10, state: "satisfied", observed_value: 2 },
+      ], missing_reasons: [] },
+    { horse_number: 3, horse_name: "ミナモ", win_odds: 20,
+      place_odds_min: 5, place_odds_max: 8, market_rank: 3,
+      normalized_win_market_share: .06, rule_judgement: "見送り",
+      rule_reason: "市場順位: 未達（実測値3位 / 条件2位以内） / 単勝オッズ: 未達（実測値20.0 / 条件10.0以下）",
+      rule_conditions: [
+        { field: "market_rank", operator: "lte", threshold: 2, state: "failed", observed_value: 3 },
+        { field: "win_odds", operator: "lte", threshold: 10, state: "failed", observed_value: 20 },
+      ], missing_reasons: [] },
+    { horse_number: 2, horse_name: "観測欠損", win_odds: null,
+      place_odds_min: null, place_odds_max: null, market_rank: null,
+      normalized_win_market_share: null, rule_judgement: "注目",
+      rule_reason: "市場順位: 達成（実測値不明 / 条件2位以内） / 単勝オッズ: 未達（実測値不明 / 条件10.0以下）",
+      rule_conditions: [
+        { field: "market_rank", operator: "lte", threshold: 2, state: "satisfied", observed_value: null },
+        { field: "win_odds", operator: "lte", threshold: 10, state: "failed", observed_value: null },
+      ], missing_reasons: [] }],
     disclaimer: "注目段階はルール該当率です。期待値、回収率、購入推奨、利益優位性を示しません。",
   };
   vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
@@ -93,7 +113,14 @@ it("opens the fixed decision detail and restores list selections on back", async
   fireEvent.click(await screen.findByRole("button", { name: "注目あり" }));
   fireEvent.click(screen.getByRole("button", { name: /東京 2R/ }));
   expect(await screen.findByRole("heading", { name: "東京 2R" })).toBeTruthy();
-  expect(screen.getByText("市場順位が2位以内 / 単勝オッズが10.0以下")).toBeTruthy();
+  const favoriteConditions = within(screen.getByLabelText("アカツキ")).getByRole("list", { name: "判定条件" });
+  const missedConditions = within(screen.getByLabelText("ミナモ")).getByRole("list", { name: "判定条件" });
+  expect(within(favoriteConditions).getByText("市場順位: 達成（実測値1位 / 条件2位以内）")).toBeTruthy();
+  expect(within(missedConditions).getByText("市場順位: 未達（実測値3位 / 条件2位以内）")).toBeTruthy();
+  expect(within(missedConditions).getByText("単勝オッズ: 未達（実測値20.0 / 条件10.0以下）")).toBeTruthy();
+  const unknownOdds = screen.getByLabelText("観測欠損");
+  expect(within(unknownOdds).getAllByText("—")).toHaveLength(4);
+  expect(within(unknownOdds).getByText("市場順位: 達成（実測値不明 / 条件2位以内）")).toBeTruthy();
   expect(screen.getByText(/期待値、回収率、購入推奨/)).toBeTruthy();
   expect(screen.getByRole("heading", { name: "実購入・結果・収支" })).toBeTruthy();
   expect(screen.getByText("データ状態: 判定済み")).toBeTruthy();

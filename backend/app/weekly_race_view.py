@@ -5,19 +5,26 @@ from pydantic import BaseModel
 from app.database import SqliteDatabase
 from app.market_attention import build_market_attention_ranking
 from app.race_analysis import RaceSummary, build_race_summary
-from app.rule_judgements import judgement_response
+from app.rule_judgements import (
+    RuleCondition,
+    build_rule_conditions,
+    judgement_response,
+    rule_condition_reason,
+    rule_version_response,
+)
 
 
 class WeeklyDecisionRunner(BaseModel):
     horse_number: int
     horse_name: str
-    win_odds: float
-    place_odds_min: float
-    place_odds_max: float
+    win_odds: float | None
+    place_odds_min: float | None
+    place_odds_max: float | None
     market_rank: int | None
     normalized_win_market_share: float | None
     rule_judgement: Literal["注目", "見送り", "判定不能"]
     rule_reason: str
+    rule_conditions: list[RuleCondition]
     missing_reasons: list[str]
 
 
@@ -40,7 +47,7 @@ class WeeklyRaceDecisionView(BaseModel):
 def weekly_race_decision_view(
     database: SqliteDatabase, race_id: int, snapshot_id: int, judgement_id: int,
 ) -> WeeklyRaceDecisionView:
-    race_stored = database.get_race(race_id)
+    race_stored = database.get_race_roster(race_id)
     snapshot_stored = database.get_odds_snapshot(snapshot_id)
     judgement_stored = database.get_rule_judgement(judgement_id)
     if race_stored is None:
@@ -64,20 +71,33 @@ def weekly_race_decision_view(
     market_by_number = {runner.horse_number: runner for runner in market.runners}
     odds_by_number = {int(row["horse_number"]): row for row in snapshot_runners}
     judgement = judgement_response(judgement_run, judgement_runners)
+    rule_version_row = next((
+        row for row in database.list_rule_versions()
+        if int(row["id"]) == judgement.rule_version_id
+    ), None)
+    rule_version = None if rule_version_row is None else rule_version_response(rule_version_row)
     runners = []
     for item in judgement.runners:
-        odds = odds_by_number[item.horse_number]
+        odds = odds_by_number.get(item.horse_number)
         market_item = market_by_number.get(item.horse_number)
-        reasons = item.missing_reasons or [*item.satisfied_conditions, *item.failed_conditions]
+        conditions = build_rule_conditions(
+            rule_version, item.satisfied_conditions, item.failed_conditions,
+            {
+                "market_rank": None if market_item is None else market_item.rank,
+                "win_odds": None if odds is None else float(odds["win_odds"]),
+            },
+        )
         runners.append(WeeklyDecisionRunner(
             horse_number=item.horse_number, horse_name=item.horse_name,
-            win_odds=float(odds["win_odds"]), place_odds_min=float(odds["place_odds_min"]),
-            place_odds_max=float(odds["place_odds_max"]),
+            win_odds=None if odds is None else float(odds["win_odds"]),
+            place_odds_min=None if odds is None else float(odds["place_odds_min"]),
+            place_odds_max=None if odds is None else float(odds["place_odds_max"]),
             market_rank=None if market_item is None else market_item.rank,
             normalized_win_market_share=(
                 None if market_item is None else market_item.normalized_win_market_share
             ),
-            rule_judgement=item.judgement, rule_reason=" / ".join(reasons),
+            rule_judgement=item.judgement, rule_reason=rule_condition_reason(conditions),
+            rule_conditions=conditions,
             missing_reasons=item.missing_reasons,
         ))
     return WeeklyRaceDecisionView(

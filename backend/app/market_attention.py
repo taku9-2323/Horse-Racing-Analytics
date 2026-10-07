@@ -35,6 +35,15 @@ def build_market_attention_ranking(
         for runner in race_runners
         if str(runner["status"]) == "出走"
     }
+    snapshot_numbers = {int(runner["horse_number"]) for runner in snapshot_runners}
+    if active_names.keys() - snapshot_numbers:
+        return MarketAttentionRanking(
+            race_id=race_id, snapshot_id=int(snapshot["id"]),
+            observed_at=snapshot["observed_at"], received_at=str(snapshot["received_at"]),
+            status="unavailable",
+            unavailable_reason="選択したオッズ時点の出走馬データが不足しているため順位を算出できません。",
+            runners=[],
+        )
     eligible = [runner for runner in snapshot_runners if int(runner["horse_number"]) in active_names]
     if not eligible:
         return MarketAttentionRanking(
