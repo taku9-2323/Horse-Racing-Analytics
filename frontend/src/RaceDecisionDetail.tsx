@@ -1,12 +1,13 @@
 import JstTimestamp from "./JstTimestamp";
 import BettingPanel from "./BettingPanel";
+import RuleConditionList, { type RuleCondition } from "./RuleConditionList";
 
 export type DecisionRunner = {
-  horse_number: number; horse_name: string; win_odds: number;
-  place_odds_min: number; place_odds_max: number; market_rank: number | null;
+  horse_number: number; horse_name: string; win_odds: number | null;
+  place_odds_min: number | null; place_odds_max: number | null; market_rank: number | null;
   normalized_win_market_share: number | null;
   rule_judgement: "注目" | "見送り" | "判定不能";
-  rule_reason: string; missing_reasons: string[];
+  rule_reason: string; rule_conditions?: RuleCondition[]; missing_reasons: string[];
 };
 
 export type DecisionView = {
@@ -59,10 +60,13 @@ export default function RaceDecisionDetail({
         aria-label={runner.horse_number === selectedHorseNumber ? `${runner.horse_name} 選択中` : runner.horse_name}>
         <div><b>{runner.horse_number}</b><strong>{runner.horse_name}</strong><span className="decision-badge">{runner.rule_judgement}</span>
           {runner.horse_number === selectedHorseNumber && <span className="selected-horse-badge">一覧で選択</span>}</div>
-        <p>{runner.rule_reason}</p>
+        {runner.rule_conditions && runner.rule_conditions.length > 0
+          ? <RuleConditionList conditions={runner.rule_conditions} />
+          : <p>{runner.rule_reason}</p>}
         <dl><div><dt>市場順位</dt><dd>{runner.market_rank === null ? "—" : `${runner.market_rank}位`}</dd></div>
-          <div><dt>単勝</dt><dd>{runner.win_odds.toFixed(1)}</dd></div>
-          <div><dt>複勝</dt><dd>{runner.place_odds_min.toFixed(1)}–{runner.place_odds_max.toFixed(1)}</dd></div>
+          <div><dt>単勝</dt><dd>{runner.win_odds === null ? "—" : runner.win_odds.toFixed(1)}</dd></div>
+          <div><dt>複勝</dt><dd>{runner.place_odds_min === null || runner.place_odds_max === null
+            ? "—" : `${runner.place_odds_min.toFixed(1)}–${runner.place_odds_max.toFixed(1)}`}</dd></div>
           <div><dt>市場シェア</dt><dd>{percent(runner.normalized_win_market_share)}</dd></div></dl>
       </article>)}
     </div>

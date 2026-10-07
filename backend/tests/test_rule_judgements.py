@@ -4,9 +4,32 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.rule_judgements import build_rule_conditions, rule_condition_reason, rule_version_response
 
 
 CSV = (Path(__file__).parents[2] / "examples" / "sample-race.csv").read_bytes()
+
+
+def test_missing_observed_value_does_not_change_a_stored_condition_state() -> None:
+    version = rule_version_response({
+        "id": 1, "rule_key": "market_observation_filter", "version": 1,
+        "title": "市場順位・単勝オッズ観察ルール",
+        "conditions_json": '{"attention":[{"field":"market_rank","operator":"lte","value":2},'
+                           '{"field":"win_odds","operator":"lte","value":10.0}]}',
+        "priority_json": '["判定不能","注目","見送り"]', "missing_policy": "判定不能",
+        "vocabulary_json": '["注目","見送り","判定不能"]',
+        "allowed_fields_json": '["market_rank","win_odds"]', "created_at": "2026-08-01T00:00:00Z",
+    })
+    conditions = build_rule_conditions(
+        version, ["市場順位が2位以内"], ["単勝オッズが10.0以下"],
+        {"market_rank": None, "win_odds": None},
+    )
+
+    assert [condition.state for condition in conditions] == ["satisfied", "failed"]
+    assert [condition.observed_value for condition in conditions] == [None, None]
+    reason = rule_condition_reason(conditions)
+    assert "市場順位: 達成（実測値不明" in reason
+    assert "単勝オッズ: 未達（実測値不明" in reason
 
 
 def setup_race(client: TestClient) -> tuple[int, int]:
@@ -86,6 +109,21 @@ def test_inactive_runner_is_frozen_as_unavailable_with_reason(tmp_path: Path) ->
         frozen = client.post(f"/api/races/{race_id}/rule-judgements/freeze", json={
             "snapshot_id": snapshot_id, "rule_version_id": rule_id, "judgement_as_of": "2026-08-30T05:00:00Z",
         }).json()
+        weekly_detail = client.get(f"/api/races/{race_id}/weekly-decision-view", params={
+            "snapshot_id": snapshot_id, "judgement_id": frozen["id"],
+        }).json()
+        comparison = client.get(f"/api/races/{race_id}/market-rule-comparison", params={
+            "snapshot_id": snapshot_id, "rule_version_id": rule_id,
+        }).json()
 
     assert frozen["runners"][0]["judgement"] == "判定不能"
     assert frozen["runners"][0]["missing_reasons"] == ["有効な出走馬の単勝オッズがありません。"]
+    for row in (weekly_detail["runners"][0], comparison["rows"][0]):
+        assert row["rule_conditions"] == [
+            {"field": "market_rank", "operator": "lte", "threshold": 2,
+             "state": "unknown", "observed_value": None},
+            {"field": "win_odds", "operator": "lte", "threshold": 10.0,
+             "state": "unknown", "observed_value": 2.0},
+        ]
+        assert "判定状態不明" in row["rule_reason"]
+        assert "実測値不明" in row["rule_reason"]

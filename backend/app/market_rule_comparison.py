@@ -1,9 +1,16 @@
+from collections.abc import Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.market_attention import MarketAttentionRanking
-from app.rule_judgements import RuleJudgementRun
+from app.rule_judgements import (
+    RuleCondition,
+    RuleJudgementRun,
+    RuleVersion,
+    build_rule_conditions,
+    rule_condition_reason,
+)
 
 
 class ComparisonRow(BaseModel):
@@ -14,6 +21,7 @@ class ComparisonRow(BaseModel):
     market_reason: str
     rule_judgement: Literal["注目", "見送り", "判定不能"] | None
     rule_reason: str
+    rule_conditions: list[RuleCondition] = Field(default_factory=list)
     missing_reasons: list[str]
 
 
@@ -34,7 +42,8 @@ class MarketRuleComparison(BaseModel):
 
 def build_comparison(
     race_id: int, rule_version_id: int, market: MarketAttentionRanking | None,
-    judgement: RuleJudgementRun | None, rule_exists: bool,
+    judgement: RuleJudgementRun | None, rule_version: RuleVersion | None,
+    snapshot_runners: Sequence[Any] = (),
 ) -> MarketRuleComparison:
     if market is None:
         return MarketRuleComparison(
@@ -43,7 +52,7 @@ def build_comparison(
             observed_at=None, received_at=None, fixed_state="not_generated",
             official_pre_race_eligible=False, judgement_run_id=None, rows=[],
         )
-    if not rule_exists:
+    if rule_version is None:
         return MarketRuleComparison(
             race_id=race_id, snapshot_id=market.snapshot_id, rule_version_id=rule_version_id,
             state="rule_version_mismatch", next_action="保存されているルール版を選択してください。",
@@ -52,6 +61,9 @@ def build_comparison(
             judgement_run_id=None, rows=[],
         )
     market_by_number = {runner.horse_number: runner for runner in market.runners}
+    odds_by_number = {
+        int(runner["horse_number"]): float(runner["win_odds"]) for runner in snapshot_runners
+    }
     if judgement is None:
         rows = [ComparisonRow(
             horse_number=runner.horse_number, horse_name=runner.horse_name,
@@ -69,14 +81,24 @@ def build_comparison(
     rows = []
     for result in judgement.runners:
         market_runner = market_by_number.get(result.horse_number)
-        reasons = [*result.satisfied_conditions, *result.failed_conditions]
+        conditions = build_rule_conditions(
+            rule_version, result.satisfied_conditions, result.failed_conditions,
+            {
+                "market_rank": None if market_runner is None else market_runner.rank,
+                "win_odds": odds_by_number.get(result.horse_number),
+            },
+        )
         rows.append(ComparisonRow(
             horse_number=result.horse_number, horse_name=result.horse_name,
             market_rank=None if market_runner is None else market_runner.rank,
             normalized_win_market_share=None if market_runner is None else market_runner.normalized_win_market_share,
-            market_reason="有効な市場順位がありません。" if market_runner is None else f"正規化市場シェア {(market_runner.normalized_win_market_share * 100):.2f}% の順位",
+            market_reason=(
+                (market.unavailable_reason or "有効な市場順位がありません。")
+                if market_runner is None else
+                f"正規化市場シェア {(market_runner.normalized_win_market_share * 100):.2f}% の順位"
+            ),
             rule_judgement=result.judgement,
-            rule_reason=" / ".join(reasons) if reasons else "必要データが不足しています。",
+            rule_reason=rule_condition_reason(conditions), rule_conditions=conditions,
             missing_reasons=result.missing_reasons,
         ))
     fixed_state: Literal["fixed", "invalidated", "post_start"] = (

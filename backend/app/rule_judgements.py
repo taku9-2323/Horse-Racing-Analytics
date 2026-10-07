@@ -1,7 +1,7 @@
 import json
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeGuard, cast
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints
 from typing_extensions import Annotated
 
 from app.race_analysis import win_market_baseline
@@ -36,6 +36,17 @@ class RuleVersion(BaseModel):
     vocabulary: list[str]
     allowed_fields: list[str]
     created_at: str
+
+
+RuleConditionField = Literal["market_rank", "win_odds"]
+
+
+class RuleCondition(BaseModel):
+    field: RuleConditionField
+    operator: str | None
+    threshold: int | float | None
+    state: Literal["satisfied", "failed", "unknown"]
+    observed_value: int | float | None
 
 
 class RunnerJudgement(BaseModel):
@@ -85,6 +96,87 @@ def rule_version_response(row: Any) -> RuleVersion:
         vocabulary=json.loads(str(row["vocabulary_json"])),
         allowed_fields=json.loads(str(row["allowed_fields_json"])), created_at=str(row["created_at"]),
     )
+
+
+_CONDITION_NAMES: dict[RuleConditionField, str] = {
+    "market_rank": "市場順位が2位以内",
+    "win_odds": "単勝オッズが10.0以下",
+}
+_CONDITION_LABELS = {"market_rank": "市場順位", "win_odds": "単勝オッズ"}
+
+
+def _is_rule_condition_field(value: object) -> TypeGuard[RuleConditionField]:
+    return isinstance(value, str) and value in _CONDITION_NAMES
+
+
+def build_rule_conditions(
+    rule_version: RuleVersion | None,
+    satisfied_conditions: list[str],
+    failed_conditions: list[str],
+    observed_values: dict[str, int | float | None],
+) -> list[RuleCondition]:
+    """Describe the two current frozen conditions without reevaluating them."""
+    rule_conditions = (
+        rule_version.conditions.get("attention", []) if rule_version is not None else []
+    )
+    definitions: dict[RuleConditionField, dict[str, Any]] = {}
+    for item in rule_conditions:
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        if _is_rule_condition_field(field):
+            definitions[field] = item
+    # A missing historical version must not erase the persisted state or guess its metadata.
+    fields: list[RuleConditionField] = (
+        list(definitions) if definitions else list(_CONDITION_NAMES)
+    )
+    output: list[RuleCondition] = []
+    for field in fields:
+        name = _CONDITION_NAMES[field]
+        was_satisfied = name in satisfied_conditions
+        was_failed = name in failed_conditions
+        state: Literal["satisfied", "failed", "unknown"] = (
+            "satisfied" if was_satisfied and not was_failed
+            else "failed" if was_failed and not was_satisfied
+            else "unknown"
+        )
+        definition = definitions.get(field)
+        threshold = None if definition is None else definition.get("value")
+        operator = None if definition is None else definition.get("operator")
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+            threshold = None
+        if not isinstance(operator, str):
+            operator = None
+        output.append(RuleCondition(
+            field=field, operator=operator, threshold=threshold, state=state,
+            observed_value=observed_values.get(field),
+        ))
+    return output
+
+
+def rule_condition_reason(conditions: list[RuleCondition]) -> str:
+    status_labels = {
+        "satisfied": "達成", "failed": "未達", "unknown": "判定状態不明",
+    }
+    descriptions = []
+    for condition in conditions:
+        value = condition.observed_value
+        measured = (
+            f"実測値{int(value)}位" if condition.field == "market_rank" and value is not None
+            else f"実測値{float(value):.1f}" if condition.field == "win_odds" and value is not None
+            else "実測値不明"
+        )
+        if condition.threshold is None or condition.operator != "lte":
+            threshold = "条件不明"
+        elif condition.field == "market_rank":
+            threshold = f"条件{condition.threshold:g}位以内"
+        else:
+            threshold = f"条件{condition.threshold:.1f}以下"
+        label = _CONDITION_LABELS[condition.field]
+        descriptions.append(
+            f"{label}: {status_labels[condition.state]}（{measured} / {threshold}）"
+        )
+    return " / ".join(descriptions) if descriptions else "判定条件を再現できません。"
 
 
 def build_runner_judgements(race_runners: list[Any], snapshot_runners: list[Any]) -> list[dict[str, Any]]:

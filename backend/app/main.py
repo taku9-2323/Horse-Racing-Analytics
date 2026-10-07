@@ -482,7 +482,7 @@ def create_app(
     def get_market_rule_comparison(
         race_id: int, rule_version_id: int, snapshot_id: int | None = None,
     ) -> MarketRuleComparison:
-        race = database.get_race(race_id)
+        race = database.get_race_roster(race_id)
         if race is None:
             raise HTTPException(status_code=404, detail={"code": "race_not_found", "message": "レースが見つかりません。"})
         snapshots = database.list_odds_snapshots(race_id)
@@ -490,12 +490,15 @@ def create_app(
             (stored for stored in snapshots if int(stored[0]["id"]) == snapshot_id), None,
         )
         market = None if selected is None else build_market_attention_ranking(race_id, *selected, race[1])
-        rule_exists = any(int(row["id"]) == rule_version_id for row in database.list_rule_versions())
+        rule_row = next((row for row in database.list_rule_versions()
+                         if int(row["id"]) == rule_version_id), None)
+        rule_version = None if rule_row is None else rule_version_response(rule_row)
         matching = [judgement_response(*stored) for stored in database.list_rule_judgements(race_id)
                     if int(stored[0]["input_snapshot_id"]) == (snapshot_id if snapshot_id is not None else (market.snapshot_id if market else -1))
                     and int(stored[0]["rule_version_id"]) == rule_version_id]
         judgement = matching[-1] if matching else None
-        return build_comparison(race_id, rule_version_id, market, judgement, rule_exists)
+        snapshot_runners = [] if selected is None else selected[1]
+        return build_comparison(race_id, rule_version_id, market, judgement, rule_version, snapshot_runners)
 
     @app.post("/api/odds-snapshots/{snapshot_id}/freeze", response_model=PredictionRun, status_code=201)
     def freeze_prediction(snapshot_id: int, request: FreezeRequest) -> PredictionRun:

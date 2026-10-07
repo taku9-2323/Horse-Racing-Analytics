@@ -1423,6 +1423,21 @@ class SqliteDatabase:
                 } for runner in runners]
         return race, runners
 
+    def get_race_roster(self, race_id: int) -> tuple[sqlite3.Row, list[Any]] | None:
+        """Return race and entrant identity/status without overlaying latest odds."""
+        with sqlite3.connect(self._path) as connection:
+            connection.row_factory = sqlite3.Row
+            race = connection.execute(
+                "SELECT * FROM races WHERE id = ?", (race_id,),
+            ).fetchone()
+            if race is None:
+                return None
+            runners = connection.execute(
+                "SELECT * FROM runners WHERE race_id = ? ORDER BY horse_number",
+                (race_id,),
+            ).fetchall()
+        return race, runners
+
     def list_races(self) -> list[sqlite3.Row]:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
