@@ -17,6 +17,7 @@ export type DecisionView = {
   snapshot_id: number; judgement_id: number; rule_version_id: number;
   observed_at: string | null; received_at: string; judgement_as_of: string;
   judgement_frozen_at: string; attention_horse_count: number; judged_runner_count: number;
+  attention_level: "none" | "low" | "medium" | "high" | null;
   runners: DecisionRunner[]; disclaimer: string;
 };
 
@@ -30,6 +31,7 @@ type Props = {
 };
 
 const percent = (value: number | null) => value === null ? "—" : `${Math.round(value * 100)}%`;
+const attentionLevelLabels = { none: "なし", low: "低", medium: "中", high: "高" } as const;
 
 export default function RaceDecisionDetail({
   detail, dataState, backLabel, onBack, selectedHorseNumber, onNavigate,
@@ -38,6 +40,9 @@ export default function RaceDecisionDetail({
     (left.horse_number === selectedHorseNumber ? 0 : 1) - (right.horse_number === selectedHorseNumber ? 0 : 1)
     || (left.rule_judgement === "注目" ? 0 : 1) - (right.rule_judgement === "注目" ? 0 : 1)
     || left.horse_number - right.horse_number);
+  const attentionSummary = detail.judged_runner_count === 0
+    ? "判定対象なし（0頭）"
+    : `注目度: ${detail.attention_level === null ? "段階なし" : attentionLevelLabels[detail.attention_level]} — 注目 ${detail.attention_horse_count}頭 / 判定対象 ${detail.judged_runner_count}頭`;
 
   return <section className="weekly-detail" aria-labelledby="weekly-detail-heading">
     <button type="button" className="back-button" aria-label={backLabel} onClick={onBack}>← {backLabel}</button>
@@ -46,7 +51,11 @@ export default function RaceDecisionDetail({
         <h2 id="weekly-detail-heading">{detail.race.racecourse} {detail.race.race_number}R</h2>
         <p>{detail.race.surface}{detail.race.distance_m}m / {detail.race.going} / {detail.race.field_size}頭</p>
       </div>
-      <strong>注目 {detail.attention_horse_count}頭 / {detail.judged_runner_count}頭</strong>
+      <div className="decision-attention-summary"
+        aria-label={`詳細で選択中の保存済み判定 ${attentionSummary}`}>
+        <span>詳細で選択中の保存済み判定</span>
+        <strong>{attentionSummary}</strong>
+      </div>
     </div>
     <p className="detail-data-state">データ状態: {dataState}</p>
     <dl className="decision-times">

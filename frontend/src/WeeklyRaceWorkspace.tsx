@@ -125,26 +125,41 @@ export default function WeeklyRaceWorkspace({ onNavigate }: Props) {
       </div>
         : <ul className="weekly-race-list" aria-label="レース一覧">{visible.map((race) => {
           const canOpen = race.race_id !== null && race.snapshot_id !== null && race.judgement_id !== null;
-          const attention = race.attention_horse_count !== null && race.judged_runner_count !== null
-            ? `注目 ${race.attention_horse_count}頭 / ${race.judged_runner_count}頭` : statusLabels[race.display_state];
-          const level = race.attention_level ? levelLabels[race.attention_level] : null;
-          const attentionStatus = race.attention_horse_count === null ? "未判定"
-            : race.attention_horse_count > 0 ? "注目馬あり" : "注目馬なし";
+          const attentionCount = race.attention_horse_count;
+          const judgedCount = race.judged_runner_count;
+          const hasJudgement = attentionCount !== null && judgedCount !== null;
+          const level = race.attention_level === null ? null : levelLabels[race.attention_level];
+          const attention = hasJudgement
+            ? judgedCount === 0
+              ? "判定対象なし（0頭）"
+              : `注目度: ${level ?? "段階なし"} — 注目 ${attentionCount}頭 / 判定対象 ${judgedCount}頭`
+            : statusLabels[race.display_state];
+          const attentionStatus = !hasJudgement ? "未判定"
+            : judgedCount === 0 ? "判定対象なし"
+              : attentionCount > 0 ? "注目馬あり" : "注目馬なし";
+          const judgementIdentifiers = [
+            race.rule_version_id === null ? null : `ルール版ID ${race.rule_version_id}`,
+            race.snapshot_id === null ? null : `オッズ記録ID ${race.snapshot_id}`,
+          ].filter((identifier): identifier is string => identifier !== null).join(" / ");
+          const attentionSource = hasJudgement
+            ? `週次一覧の採用判定${judgementIdentifiers ? `（${judgementIdentifiers}）` : ""}`
+            : "週次一覧の採用判定";
           return <li key={`${race.race_date}-${race.racecourse}-${race.race_number}`}>
             <button type="button" disabled={!canOpen} onClick={() => void openDetail(race)}
-              aria-label={`${race.start_time} ${race.racecourse} ${race.race_number}R ${race.race_name} ${attentionStatus} ${attention}${level ? ` 注目度 ${level}` : ""} ${race.has_started ? "発走後" : acquisitionLabels[race.state]}`}>
+              aria-label={`${race.start_time} ${race.racecourse} ${race.race_number}R ${race.race_name} ${attentionSource} ${attentionStatus} ${attention} ${race.has_started ? "発走後" : acquisitionLabels[race.state]}`}>
               <time dateTime={`${race.race_date}T${race.start_time}`}>{race.start_time}</time>
               <strong title={`${race.racecourse} ${race.race_number}R`}>{race.racecourse} {race.race_number}R</strong>
               <span className="race-name">{race.race_name}</span>
               <span className="race-meta desktop-only">{race.surface}{race.distance_m}m / {race.condition_text}</span>
-              <span className={`attention-band level-${race.attention_level ?? "pending"}`} title={attentionStatus}><span className="desktop-only">{attentionStatus}</span><span className="mobile-only">{race.attention_horse_count === null ? "未判定" : race.attention_horse_count > 0 ? "注目あり" : "注目なし"}</span></span>
-              <span className="attention-count desktop-only">{race.attention_horse_count === null ? "—" : attention}</span>
-              <span className="attention-count mobile-only">{race.attention_horse_count === null || race.judged_runner_count === null ? "—" : `${race.attention_horse_count}/${race.judged_runner_count}`}</span>
+              <span className={`attention-band level-${race.attention_level ?? "pending"}`} title={attentionStatus}><span className="desktop-only">{attentionStatus}</span><span className="mobile-only">{!hasJudgement ? "未判定" : judgedCount === 0 ? "対象なし" : attentionCount > 0 ? "注目あり" : "注目なし"}</span></span>
+              <span className="attention-count">{hasJudgement
+                ? <><span className="attention-source">{attentionSource}</span><span>{attention}</span></>
+                : "—"}</span>
               <span className="acquisition-state" title={race.has_started ? "発走後" : acquisitionLabels[race.state]}>{race.has_started ? "発走後" : race.state === "entries_waiting" ? "出馬待ち" : acquisitionLabels[race.state]}</span>
             </button>
           </li>;
         })}</ul>}
-      <aside className="attention-disclaimer">注目度は「注目」の馬が1頭以上いるレースを、判定対象馬に占める割合で段階表示しています。期待値、回収率、購入推奨、利益優位性を示しません。</aside>
+      <aside className="attention-disclaimer">注目度は固定ルール判定の対象頭数に占める『注目』頭数の割合を段階表示したものです。予測確率・予測自信度・市場優位性・購入推奨を示しません。</aside>
     </section>}
   </div>;
 }

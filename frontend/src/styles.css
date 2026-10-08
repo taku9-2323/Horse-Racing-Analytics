@@ -291,7 +291,10 @@ th { color: #8f9b94; font-weight: 500; }
 .weekly-race-list li + li { border-top: 1px solid rgba(220, 204, 170, .08); }
 .weekly-race-list li > button { display: grid; grid-template-columns: 4rem 6.5rem minmax(7rem, 1fr) minmax(8rem, 1fr) 6.8rem 8.5rem 5.2rem; align-items: center; gap: 10px; width: 100%; border: 0; border-left: 7px solid transparent; border-radius: 0; padding: 14px 21px; color: #f4f0e8; background: transparent; text-align: left; }
 .weekly-race-list li > button:not(:disabled):hover { background: rgba(255, 255, 255, .04); }
-.weekly-race-list time, .race-name, .race-meta, .attention-count, .acquisition-state { overflow: hidden; color: #aeb8b2; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.weekly-race-list time, .race-name, .race-meta, .acquisition-state { overflow: hidden; color: #aeb8b2; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.attention-count { min-width: 0; color: #aeb8b2; font-size: .76rem; line-height: 1.4; }
+.attention-count > span { display: block; }
+.attention-source { color: #8f9b94; font-size: .68rem; }
 .acquisition-state { text-align: right; }
 .mobile-only { display: none; }
 .attention-band { justify-self: start; border: 1px solid rgba(220, 204, 170, .22); border-radius: 999px; padding: 5px 8px; font-size: .75rem; white-space: nowrap; }
@@ -304,7 +307,9 @@ th { color: #8f9b94; font-weight: 500; }
 .back-button { margin: 20px 28px 0; }
 .weekly-detail-header { align-items: end; }
 .weekly-detail-header p { margin: 7px 0 0; color: #aeb8b2; }
-.weekly-detail-header > strong { color: #f6d788; }
+.decision-attention-summary { display: flex; max-width: 25rem; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+.decision-attention-summary > span { color: #8f9b94; font-size: .72rem; }
+.decision-attention-summary > strong { color: #f6d788; font-size: .9rem; line-height: 1.4; }
 .detail-data-state { margin: -10px 28px 20px; color: #b5c0b9; font-size: .78rem; }
 .decision-times { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; padding: 0 28px 22px; }
 .decision-times div { padding: 11px 14px; border: 1px solid rgba(220, 204, 170, .12); }
@@ -545,14 +550,17 @@ footer {
   .race-state { grid-column: 2; grid-row: 1 / span 2; }
   .weekly-list-heading, .weekly-detail-header { align-items: flex-start; flex-direction: column; padding: 20px; }
   .date-tabs, .course-tabs, .race-filters { padding-right: 20px; padding-left: 20px; }
-  .weekly-race-list li > button { grid-template-columns: 2.3rem minmax(0, 1fr) 3.5rem 2.2rem 3.1rem; gap: 2px; padding: 12px 3px; font-size: .75rem; }
+  .weekly-race-list li > button { grid-template-columns: 2.3rem minmax(0, 1fr) auto; gap: 2px; padding: 12px 3px; font-size: .75rem; }
   .weekly-race-list .race-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .desktop-only { display: none; }
   .mobile-only { display: block; }
   .weekly-race-list li > button > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .weekly-race-list time, .weekly-race-list .attention-count, .weekly-race-list .acquisition-state { font-size: .75rem; }
+  .weekly-race-list time, .weekly-race-list .acquisition-state { font-size: .75rem; }
   .weekly-race-list .attention-band { min-width: 0; padding: 4px 2px; font-size: .75rem; }
-  .attention-count { text-align: right; }
+  .weekly-race-list .attention-count { grid-column: 2; grid-row: 2; text-align: left; font-size: .7rem; }
+  .weekly-race-list .attention-count > span { overflow-wrap: anywhere; }
+  .weekly-race-list .acquisition-state { grid-column: 3; grid-row: 2; }
+  .decision-attention-summary { max-width: 100%; align-items: flex-start; padding: 0 20px 20px; text-align: left; }
   .back-button { margin-left: 20px; }
   .decision-times { grid-template-columns: 1fr; padding: 0 20px 20px; }
   .detail-data-state { margin-right: 20px; margin-left: 20px; }

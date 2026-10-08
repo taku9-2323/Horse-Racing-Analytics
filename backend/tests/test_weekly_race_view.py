@@ -102,6 +102,7 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
             "snapshot_id": snapshot["id"], "rule_version_id": rule["id"],
             "judgement_as_of": "2026-09-05T05:00:00Z",
         }).json()
+        seed_ready_week(database_path, race["race_id"], snapshot["id"], judgement["id"])
 
         newer_snapshot = client.post(f"/api/races/{race['race_id']}/odds-snapshots", json={
             "observed_at": "2026-09-05T05:01:00Z", "source": "test",
@@ -131,6 +132,8 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
     assert detail["observed_at"] == "2026-09-05T05:00:00Z"
     assert detail["judgement_frozen_at"] == "2026-09-05T05:05:00Z"
     assert detail["attention_horse_count"] == 2
+    assert detail["judged_runner_count"] == 5
+    assert detail["attention_level"] == "medium"
     assert detail["runners"][0] == {
         "horse_number": 1, "horse_name": "アカツキ", "win_odds": 2.0,
         "place_odds_min": 1.2, "place_odds_max": 1.5, "market_rank": 1,
@@ -157,7 +160,29 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
     assert failed_comparison["rule_reason"] == failed_detail["rule_reason"]
     assert newer_snapshot["id"] != snapshot["id"]
     assert history_after == history_before
-    assert detail["disclaimer"] == "注目段階はルール該当率です。期待値、回収率、購入推奨、利益優位性を示しません。"
+    assert detail["disclaimer"] == "注目度は固定ルール判定の対象頭数に占める『注目』頭数の割合を段階表示したものです。予測確率・予測自信度・市場優位性・購入推奨を示しません。"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE runner_rule_judgements SET judgement='判定不能' WHERE judgement_run_id=?",
+            (judgement["id"],),
+        )
+    empty_detail = client.get(
+        f"/api/races/{race['race_id']}/weekly-decision-view",
+        params={"snapshot_id": snapshot["id"], "judgement_id": judgement["id"]},
+    )
+    empty_week = client.get("/api/acquisition/jra/meeting-weeks/current")
+
+    assert empty_detail.status_code == 200
+    assert empty_detail.json()["attention_horse_count"] == 0
+    assert empty_detail.json()["judged_runner_count"] == 0
+    assert empty_detail.json()["attention_level"] is None
+    assert empty_week.status_code == 200
+    zero_target = empty_week.json()["races"][0]
+    assert zero_target["attention_horse_count"] == 0
+    assert zero_target["judged_runner_count"] == 0
+    assert zero_target["attention_ratio"] is None
+    assert zero_target["attention_level"] is None
 
 
 def test_incomplete_selected_snapshot_preserves_judgement_and_marks_market_values_unknown(
