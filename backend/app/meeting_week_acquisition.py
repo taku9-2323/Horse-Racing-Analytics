@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from pydantic import BaseModel
 
+from app.attention import _attention_level
 from app.database import RaceImportConflictError, SqliteDatabase
 from app.jra_acquisition import (
     ALLOWED_HOST, MAX_RESPONSE_BYTES, ROBOTS_URL, AcquisitionError, FetchResponse,
@@ -366,16 +367,6 @@ class JraMeetingWeekAcquirer:
         if now - cached_at > timedelta(minutes=15):
             return None
         return path.read_bytes(), "text/html", cached_at
-
-
-def _attention_level(ratio: float) -> Literal["none", "low", "medium", "high"]:
-    if ratio == 0:
-        return "none"
-    if ratio <= 0.2:
-        return "low"
-    if ratio <= 0.4:
-        return "medium"
-    return "high"
 
 
 def _parse_utc(value: str) -> datetime:

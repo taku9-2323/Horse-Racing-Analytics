@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.attention import AttentionLevel, _attention_level
 from app.database import SqliteDatabase
 from app.market_attention import build_market_attention_ranking
 from app.race_analysis import RaceSummary, build_race_summary
@@ -40,8 +41,9 @@ class WeeklyRaceDecisionView(BaseModel):
     judgement_frozen_at: str
     attention_horse_count: int
     judged_runner_count: int
+    attention_level: AttentionLevel | None
     runners: list[WeeklyDecisionRunner]
-    disclaimer: str = "注目段階はルール該当率です。期待値、回収率、購入推奨、利益優位性を示しません。"
+    disclaimer: str = "注目度は固定ルール判定の対象頭数に占める『注目』頭数の割合を段階表示したものです。予測確率・予測自信度・市場優位性・購入推奨を示しません。"
 
 
 def weekly_race_decision_view(
@@ -100,13 +102,21 @@ def weekly_race_decision_view(
             rule_conditions=conditions,
             missing_reasons=item.missing_reasons,
         ))
+    attention_horse_count = sum(item.rule_judgement == "注目" for item in runners)
+    judged_runner_count = sum(item.rule_judgement in {"注目", "見送り"} for item in runners)
+    attention_ratio = (
+        attention_horse_count / judged_runner_count if judged_runner_count > 0 else None
+    )
     return WeeklyRaceDecisionView(
         race_id=race_id, race=build_race_summary(race), snapshot_id=snapshot_id,
         judgement_id=judgement_id, rule_version_id=judgement.rule_version_id,
         observed_at=snapshot["observed_at"], received_at=str(snapshot["received_at"]),
         judgement_as_of=judgement.judgement_as_of,
         judgement_frozen_at=judgement.frozen_at,
-        attention_horse_count=sum(item.rule_judgement == "注目" for item in runners),
-        judged_runner_count=sum(item.rule_judgement in {"注目", "見送り"} for item in runners),
+        attention_horse_count=attention_horse_count,
+        judged_runner_count=judged_runner_count,
+        attention_level=(
+            None if attention_ratio is None else _attention_level(attention_ratio)
+        ),
         runners=runners,
     )
