@@ -1,9 +1,13 @@
+import { useState } from "react";
+
 import JstTimestamp from "./JstTimestamp";
 import BettingPanel from "./BettingPanel";
 import RuleConditionList, { type RuleCondition } from "./RuleConditionList";
 
 export type DecisionRunner = {
-  horse_number: number; horse_name: string; win_odds: number | null;
+  horse_number: number; horse_name: string; gate: number | null; age: number | null;
+  sex: string | null; assigned_weight: number | null; status: string | null;
+  win_odds: number | null;
   place_odds_min: number | null; place_odds_max: number | null; market_rank: number | null;
   normalized_win_market_share: number | null;
   rule_judgement: "注目" | "見送り" | "判定不能";
@@ -32,10 +36,55 @@ type Props = {
 
 const percent = (value: number | null) => value === null ? "—" : `${Math.round(value * 100)}%`;
 const attentionLevelLabels = { none: "なし", low: "低", medium: "中", high: "高" } as const;
+type ComparisonOrder = "number" | "popularity";
 
-export default function RaceDecisionDetail({
+const compareByNumber = (left: DecisionRunner, right: DecisionRunner) => left.horse_number - right.horse_number;
+const compareByPopularity = (left: DecisionRunner, right: DecisionRunner) => {
+  if (left.market_rank === null && right.market_rank !== null) return 1;
+  if (left.market_rank !== null && right.market_rank === null) return -1;
+  return (left.market_rank ?? 0) - (right.market_rank ?? 0) || compareByNumber(left, right);
+};
+const unknown = (value: string | number | null) => value === null ? "不明" : String(value);
+const winOdds = (runner: DecisionRunner) => runner.win_odds === null ? "不明" : runner.win_odds.toFixed(1);
+const placeOdds = (runner: DecisionRunner) => runner.place_odds_min === null || runner.place_odds_max === null
+  ? "不明" : `${runner.place_odds_min.toFixed(1)}–${runner.place_odds_max.toFixed(1)}`;
+
+const comparisonRows: Array<{ label: string; value: (runner: DecisionRunner) => string }> = [
+  { label: "馬番", value: (runner) => `${runner.horse_number}番` },
+  { label: "馬名", value: (runner) => runner.horse_name },
+  { label: "枠", value: (runner) => unknown(runner.gate) },
+  { label: "年齢", value: (runner) => runner.age === null ? "不明" : `${runner.age}歳` },
+  { label: "性別", value: (runner) => unknown(runner.sex) },
+  { label: "斤量", value: (runner) => runner.assigned_weight === null ? "不明" : `${runner.assigned_weight.toFixed(1)}kg` },
+  { label: "単勝", value: winOdds },
+  { label: "複勝", value: placeOdds },
+  { label: "市場順位（保存値）", value: (runner) => runner.market_rank === null ? "不明" : `${runner.market_rank}位` },
+  { label: "判定", value: (runner) => runner.rule_judgement },
+  { label: "判定理由", value: (runner) => runner.rule_reason },
+  { label: "登録状態", value: (runner) => unknown(runner.status) },
+];
+
+export default function RaceDecisionDetail(props: Props) {
+  const { detail } = props;
+  const comparisonScope = `${detail.race_id}:${detail.snapshot_id}:${detail.judgement_id}`;
+  return <RaceDecisionDetailView key={comparisonScope} {...props} />;
+}
+
+function RaceDecisionDetailView({
   detail, dataState, backLabel, onBack, selectedHorseNumber, onNavigate,
 }: Props) {
+  const [selectedHorseNumbers, setSelectedHorseNumbers] = useState<number[]>([]);
+  const [comparisonOrder, setComparisonOrder] = useState<ComparisonOrder>("number");
+  const comparisonSorter = comparisonOrder === "number" ? compareByNumber : compareByPopularity;
+  const orderedForComparison = [...detail.runners].sort(comparisonSorter);
+  const selectedRunners = orderedForComparison.filter((runner) => selectedHorseNumbers.includes(runner.horse_number));
+  const toggleComparison = (horseNumber: number) => {
+    setSelectedHorseNumbers((current) => {
+      return current.includes(horseNumber)
+        ? current.filter((number) => number !== horseNumber)
+        : [...current, horseNumber];
+    });
+  };
   const ordered = [...detail.runners].sort((left, right) =>
     (left.horse_number === selectedHorseNumber ? 0 : 1) - (right.horse_number === selectedHorseNumber ? 0 : 1)
     || (left.rule_judgement === "注目" ? 0 : 1) - (right.rule_judgement === "注目" ? 0 : 1)
@@ -60,9 +109,57 @@ export default function RaceDecisionDetail({
     <p className="detail-data-state">データ状態: {dataState}</p>
     <dl className="decision-times">
       <div><dt>オッズ観測</dt><dd><JstTimestamp value={detail.observed_at} unknown="観測時刻不明" /></dd></div>
+      <div><dt>受信時刻</dt><dd><JstTimestamp value={detail.received_at} /></dd></div>
       <div><dt>判定固定</dt><dd><JstTimestamp value={detail.judgement_frozen_at} /></dd></div>
       <div><dt>ルール</dt><dd>v{detail.rule_version_id}</dd></div>
     </dl>
+    <section className="runner-comparison" aria-labelledby="runner-comparison-heading">
+      <div className="runner-comparison-heading">
+        <div><h3 id="runner-comparison-heading">出走馬を比較</h3>
+          <p>レースID {detail.race_id} / 保存オッズ記録（snapshot {detail.snapshot_id}）/ 固定判定 {detail.judgement_id}</p>
+          <p>市場順位は選択中snapshotの保存値です。選択馬だけで順位を再計算しません。</p>
+        </div>
+        <label>比較の順序
+          <select aria-label="比較の順序" value={comparisonOrder}
+            onChange={(event) => setComparisonOrder(event.currentTarget.value as ComparisonOrder)}>
+            <option value="number">馬番順</option>
+            <option value="popularity">人気順（保存済み市場順位）</option>
+          </select>
+        </label>
+      </div>
+      <fieldset className="comparison-runner-choices">
+        <legend>比較する馬を選択</legend>
+        {orderedForComparison.map((runner) => <label key={runner.horse_number}>
+          <input type="checkbox" checked={selectedHorseNumbers.includes(runner.horse_number)}
+            aria-label={`${runner.horse_number}番 ${runner.horse_name}を比較する`}
+            onChange={() => toggleComparison(runner.horse_number)} />
+          <span>{runner.horse_number}番 {runner.horse_name}</span>
+          {runner.status !== null && runner.status !== "出走" && <span className="comparison-runner-status">{runner.status}</span>}
+          {runner.market_rank === null ? <small>市場順位不明</small> : <small>市場 {runner.market_rank}位</small>}
+        </label>)}
+      </fieldset>
+      {selectedRunners.length === 0
+        ? <p className="comparison-empty">比較する馬を選択してください</p>
+        : <>
+          <div className="comparison-table-scroll desktop-only">
+            <table className="comparison-table" aria-label="選択馬の比較">
+              <thead><tr><th scope="col">項目</th>{selectedRunners.map((runner) =>
+                <th scope="col" key={runner.horse_number}>{runner.horse_number}番 {runner.horse_name}</th>)}</tr></thead>
+              <tbody>{comparisonRows.map((row) => <tr key={row.label}>
+                <th scope="row">{row.label}</th>{selectedRunners.map((runner) =>
+                  <td key={runner.horse_number}>{row.value(runner)}</td>)}
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <div className="comparison-mobile-list mobile-only" aria-label="選択馬の比較">
+            {selectedRunners.map((runner) => <article key={runner.horse_number}>
+              <h4>{runner.horse_number}番 {runner.horse_name}</h4>
+              <dl>{comparisonRows.filter((row) => row.label !== "馬番" && row.label !== "馬名")
+                .map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value(runner)}</dd></div>)}</dl>
+            </article>)}
+          </div>
+        </>}
+    </section>
     <div className="decision-runner-list" aria-label="注目馬と判定理由">
       {ordered.map((runner) => <article key={runner.horse_number}
         className={`decision-runner ${runner.rule_judgement === "注目" ? "is-attention" : ""} ${runner.horse_number === selectedHorseNumber ? "is-selected-horse" : ""}`}

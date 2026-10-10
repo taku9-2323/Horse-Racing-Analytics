@@ -38,6 +38,23 @@ def seed_ready_week(database_path: Path, race_id: int, snapshot_id: int, judgeme
         )
 
 
+def create_snapshot_and_judgement(client: TestClient, race: dict) -> tuple[dict, dict]:
+    snapshot = client.post(f"/api/races/{race['race_id']}/odds-snapshots", json={
+        "observed_at": "2026-09-05T05:00:00Z", "source": "test",
+        "runners": [{
+            "horse_number": runner["horse_number"], "win_odds": runner["win_odds"],
+            "place_odds_min": runner["place_odds_min"],
+            "place_odds_max": runner["place_odds_max"],
+        } for runner in race["runners"]],
+    }).json()
+    rule = client.get("/api/rule-versions").json()[-1]
+    judgement = client.post(f"/api/races/{race['race_id']}/rule-judgements/freeze", json={
+        "snapshot_id": snapshot["id"], "rule_version_id": rule["id"],
+        "judgement_as_of": "2026-09-05T05:00:00Z",
+    }).json()
+    return snapshot, judgement
+
+
 def test_current_week_exposes_attention_ratio_and_distinct_display_state(tmp_path: Path) -> None:
     database_path = tmp_path / "weekly-view.sqlite3"
     app = create_app(
@@ -137,6 +154,7 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
     assert detail["runners"][0] == {
         "horse_number": 1, "horse_name": "アカツキ", "win_odds": 2.0,
         "place_odds_min": 1.2, "place_odds_max": 1.5, "market_rank": 1,
+        "gate": 1, "age": 4, "sex": "牡", "assigned_weight": 57.0, "status": "出走",
         "normalized_win_market_share": detail["runners"][0]["normalized_win_market_share"],
         "rule_judgement": "注目",
         "rule_reason": "市場順位: 達成（実測値1位 / 条件2位以内） / 単勝オッズ: 達成（実測値2.0 / 条件10.0以下）",
@@ -183,6 +201,81 @@ def test_weekly_decision_view_uses_the_fixed_snapshot_and_judgement(tmp_path: Pa
     assert zero_target["judged_runner_count"] == 0
     assert zero_target["attention_ratio"] is None
     assert zero_target["attention_level"] is None
+
+
+def test_weekly_decision_view_includes_card_metadata_for_cancelled_runner(tmp_path: Path) -> None:
+    database_path = tmp_path / "weekly-cancelled-roster.sqlite3"
+    app = create_app(
+        database_path,
+        now_provider=lambda: datetime(2026, 9, 5, 5, 5, tzinfo=timezone.utc),
+    )
+    with TestClient(app) as client:
+        race = client.post(
+            "/api/races/import", content=current_week_csv(),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                """UPDATE runners SET gate=6, age=7, sex='牝', assigned_weight=51.5,
+                   status='取消' WHERE race_id=? AND horse_number=3""",
+                (race["race_id"],),
+            )
+            connection.execute(
+                "UPDATE runners SET status='除外' WHERE race_id=? AND horse_number=4",
+                (race["race_id"],),
+            )
+        snapshot, judgement = create_snapshot_and_judgement(client, race)
+
+        response = client.get(
+            f"/api/races/{race['race_id']}/weekly-decision-view",
+            params={"snapshot_id": snapshot["id"], "judgement_id": judgement["id"]},
+        )
+
+    assert response.status_code == 200, response.text
+    detail = response.json()
+    cancelled = next(runner for runner in detail["runners"] if runner["horse_number"] == 3)
+    assert [runner["horse_number"] for runner in detail["runners"]] == [1, 2, 3, 4, 5]
+    assert {
+        "gate": cancelled["gate"], "age": cancelled["age"], "sex": cancelled["sex"],
+        "assigned_weight": cancelled["assigned_weight"], "status": cancelled["status"],
+    } == {"gate": 6, "age": 7, "sex": "牝", "assigned_weight": 51.5, "status": "取消"}
+    assert cancelled["rule_judgement"] == "判定不能"
+    assert cancelled["win_odds"] == 5.0
+    excluded = next(runner for runner in detail["runners"] if runner["horse_number"] == 4)
+    assert excluded["status"] == "除外"
+    assert excluded["win_odds"] == 10.0
+
+
+def test_weekly_decision_view_leaves_card_metadata_unknown_when_roster_row_is_missing(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "weekly-missing-roster.sqlite3"
+    app = create_app(
+        database_path,
+        now_provider=lambda: datetime(2026, 9, 5, 5, 5, tzinfo=timezone.utc),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        race = client.post(
+            "/api/races/import", content=current_week_csv(),
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+        ).json()
+        snapshot, judgement = create_snapshot_and_judgement(client, race)
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "DELETE FROM runners WHERE race_id=? AND horse_number=5", (race["race_id"],),
+            )
+
+        response = client.get(
+            f"/api/races/{race['race_id']}/weekly-decision-view",
+            params={"snapshot_id": snapshot["id"], "judgement_id": judgement["id"]},
+        )
+
+    assert response.status_code == 200, response.text
+    missing = next(runner for runner in response.json()["runners"] if runner["horse_number"] == 5)
+    assert {key: missing[key] for key in (
+        "gate", "age", "sex", "assigned_weight", "status",
+    )} == {"gate": None, "age": None, "sex": None, "assigned_weight": None, "status": None}
+    assert missing["win_odds"] == 20.0
 
 
 def test_incomplete_selected_snapshot_preserves_judgement_and_marks_market_values_unknown(
