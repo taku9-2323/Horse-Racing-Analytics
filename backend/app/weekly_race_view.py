@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -18,6 +18,11 @@ from app.rule_judgements import (
 class WeeklyDecisionRunner(BaseModel):
     horse_number: int
     horse_name: str
+    gate: int | None
+    age: int | None
+    sex: str | None
+    assigned_weight: float | None
+    status: str | None
     win_odds: float | None
     place_odds_min: float | None
     place_odds_max: float | None
@@ -46,6 +51,21 @@ class WeeklyRaceDecisionView(BaseModel):
     disclaimer: str = "注目度は固定ルール判定の対象頭数に占める『注目』頭数の割合を段階表示したものです。予測確率・予測自信度・市場優位性・購入推奨を示しません。"
 
 
+def _optional_int(row: Any, key: str) -> int | None:
+    value = row[key]
+    return None if value is None else int(value)
+
+
+def _optional_float(row: Any, key: str) -> float | None:
+    value = row[key]
+    return None if value is None else float(value)
+
+
+def _optional_text(row: Any, key: str) -> str | None:
+    value = row[key]
+    return None if value is None else str(value)
+
+
 def weekly_race_decision_view(
     database: SqliteDatabase, race_id: int, snapshot_id: int, judgement_id: int,
 ) -> WeeklyRaceDecisionView:
@@ -71,6 +91,7 @@ def weekly_race_decision_view(
 
     market = build_market_attention_ranking(race_id, snapshot, snapshot_runners, race_runners)
     market_by_number = {runner.horse_number: runner for runner in market.runners}
+    roster_by_number = {int(row["horse_number"]): row for row in race_runners}
     odds_by_number = {int(row["horse_number"]): row for row in snapshot_runners}
     judgement = judgement_response(judgement_run, judgement_runners)
     rule_version_row = next((
@@ -80,6 +101,7 @@ def weekly_race_decision_view(
     rule_version = None if rule_version_row is None else rule_version_response(rule_version_row)
     runners = []
     for item in judgement.runners:
+        roster = roster_by_number.get(item.horse_number)
         odds = odds_by_number.get(item.horse_number)
         market_item = market_by_number.get(item.horse_number)
         conditions = build_rule_conditions(
@@ -91,6 +113,13 @@ def weekly_race_decision_view(
         )
         runners.append(WeeklyDecisionRunner(
             horse_number=item.horse_number, horse_name=item.horse_name,
+            gate=None if roster is None else _optional_int(roster, "gate"),
+            age=None if roster is None else _optional_int(roster, "age"),
+            sex=None if roster is None else _optional_text(roster, "sex"),
+            assigned_weight=(
+                None if roster is None else _optional_float(roster, "assigned_weight")
+            ),
+            status=None if roster is None else _optional_text(roster, "status"),
             win_odds=None if odds is None else float(odds["win_odds"]),
             place_odds_min=None if odds is None else float(odds["place_odds_min"]),
             place_odds_max=None if odds is None else float(odds["place_odds_max"]),
