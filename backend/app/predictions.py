@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from math import isclose
+from math import isclose, isfinite
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -34,9 +34,9 @@ class SnapshotCreate(BaseModel):
 
 class SnapshotRunner(BaseModel):
     horse_number: int
-    win_odds: float
-    place_odds_min: float
-    place_odds_max: float
+    win_odds: str | float | None
+    place_odds_min: str | float | None
+    place_odds_max: str | float | None
 
 
 class OddsSnapshot(BaseModel):
@@ -45,6 +45,7 @@ class OddsSnapshot(BaseModel):
     observed_at: str | None
     received_at: str
     source: str
+    source_updated_at: str | None
     runners: list[SnapshotRunner]
 
 
@@ -155,16 +156,30 @@ class PredictionRun(BaseModel):
     analysis_tags: list[AppliedAnalysisTag]
 
 
+def snapshot_odds_value(value: Any) -> str | float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if isfinite(number) else str(value)
+    return str(value)
+
+
 def snapshot_response(snapshot: Any, runners: list[Any]) -> OddsSnapshot:
     return OddsSnapshot(
         id=int(snapshot["id"]), race_id=int(snapshot["race_id"]),
         observed_at=None if snapshot["observed_at"] is None else str(snapshot["observed_at"]),
         received_at=str(snapshot["received_at"]),
         source=str(snapshot["source"]),
+        source_updated_at=(
+            None if snapshot["source_updated_at"] is None else str(snapshot["source_updated_at"])
+        ),
         runners=[SnapshotRunner(
-            horse_number=int(runner["horse_number"]), win_odds=float(runner["win_odds"]),
-            place_odds_min=float(runner["place_odds_min"]),
-            place_odds_max=float(runner["place_odds_max"]),
+            horse_number=int(runner["horse_number"]), win_odds=snapshot_odds_value(runner["win_odds"]),
+            place_odds_min=snapshot_odds_value(runner["place_odds_min"]),
+            place_odds_max=snapshot_odds_value(runner["place_odds_max"]),
         ) for runner in runners],
     )
 

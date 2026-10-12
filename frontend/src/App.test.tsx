@@ -122,7 +122,8 @@ describe("race analysis", () => {
       if (url === "/api/acquisition/jra/race-card") return Promise.resolve(response(card, 201));
       if (url === "/api/acquisition/jra/race-cards/7/odds") return Promise.resolve(response({ race_id: 3, snapshot_id: 9 }, 201));
       if (url === "/api/races/3") return Promise.resolve(response(analysis));
-      if (url === "/api/races/3/odds-snapshots" || url === "/api/races/3/predictions") return Promise.resolve(response([]));
+      if (url === "/api/races/3/odds-snapshots" || url === "/api/races/3/predictions"
+        || url === "/api/races/3/rule-judgements") return Promise.resolve(response([]));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     })));
 
@@ -167,6 +168,7 @@ describe("race analysis", () => {
       if (url === "/api/races/3") return Promise.resolve(response(analysis));
       if (url === "/api/races/3/odds-snapshots") return Promise.resolve(response([snapshot]));
       if (url === "/api/races/3/predictions") return Promise.resolve(response([]));
+      if (url === "/api/races/3/rule-judgements") return Promise.resolve(response([]));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     })));
 
@@ -176,7 +178,7 @@ describe("race analysis", () => {
 
     expect(await screen.findByRole("heading", { name: "札幌 11R" })).toBeTruthy();
     expect(screen.getByText("単勝市場投票シェア")).toBeTruthy();
-    expect(await screen.findByText("観測時刻不明")).toBeTruthy();
+    expect((await screen.findAllByText("観測時刻不明")).length).toBeGreaterThan(0);
     expect(screen.getByText("市場基準は独立した予測確率ではないため、候補を生成しません。")).toBeTruthy();
     const raceButtons = within(screen.getByRole("region", { name: "登録済みレース" })).getAllByRole("button");
     expect(raceButtons.map((button) => button.textContent)).toEqual([
@@ -315,11 +317,13 @@ describe("prediction freezing", () => {
       .mockResolvedValueOnce(jsonResponse(analysis, 201))
       .mockResolvedValueOnce(jsonResponse([historicalSnapshot]))
       .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse(snapshot, 201))
       .mockResolvedValueOnce(jsonResponse(prediction, 201))
       .mockResolvedValueOnce(jsonResponse(replacement, 201))
       .mockResolvedValueOnce(jsonResponse([historicalSnapshot, snapshot]))
-      .mockResolvedValueOnce(jsonResponse([invalidated, replacement]));
+      .mockResolvedValueOnce(jsonResponse([invalidated, replacement]))
+      .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", withMeetingWeekFallback(fetchMock));
     render(<App />);
     openArea("データ取込");
@@ -327,15 +331,15 @@ describe("prediction freezing", () => {
     fireEvent.change(screen.getByLabelText("CSVファイル"), { target: { files: [new File(["csv"], "race.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "取り込んで分析" }));
     await screen.findByRole("heading", { name: "東京 11R" });
-    expect(await screen.findByText("2026/08/30 13:45 JST")).toBeTruthy();
+    expect((await screen.findAllByText("2026/08/30 13:45 JST")).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("1番 単勝オッズ"), { target: { value: "2.4" } });
     fireEvent.change(screen.getByLabelText("オッズ観測時刻"), { target: { value: "2026-08-30T13:55" } });
     fireEvent.click(screen.getByRole("button", { name: "オッズ時点を保存" }));
-    expect(await screen.findByText("2026/08/30 13:55 JST")).toBeTruthy();
+    expect((await screen.findAllByText("2026/08/30 13:55 JST")).length).toBeGreaterThan(0);
     expect(screen.getByText("1番 単勝2.4 / 複勝1.2–1.5")).toBeTruthy();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
-    const snapshotRequest = fetchMock.mock.calls[5][1] as RequestInit;
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
+    const snapshotRequest = fetchMock.mock.calls[6][1] as RequestInit;
     const snapshotBody = JSON.parse(String(snapshotRequest.body)) as { runners: Array<{ win_odds: number }> };
     expect(snapshotBody.runners[0].win_odds).toBe(2.4);
     fireEvent.click(screen.getAllByRole("button", { name: "この時点の予測を固定" }).at(-1)!);

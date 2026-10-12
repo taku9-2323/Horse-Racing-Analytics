@@ -370,6 +370,7 @@ function AppContent() {
             <PredictionPanel
               key={analysis.race_id}
               raceId={analysis.race_id}
+              raceStartUtc={analysis.race.start_utc}
               runners={analysis.runners.map((runner) => ({
                 horse_number: runner.horse_number,
                 win_odds: runner.win_odds,
