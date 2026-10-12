@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -44,6 +45,88 @@ def snapshot_payload(analysis: dict[str, object], observed_at: str, odds_delta: 
         ],
     }
 
+
+def test_snapshot_history_exposes_matching_jra_source_update_time(tmp_path: Path) -> None:
+    database_path = tmp_path / "source-updated-at.sqlite3"
+    app = create_app(database_path, now_provider=lambda: datetime(2026, 8, 30, 5, 0, tzinfo=timezone.utc))
+
+    with TestClient(app) as client:
+        race = import_race(client)
+        race_id = race["race_id"]
+        created = client.post(
+            f"/api/races/{race_id}/odds-snapshots",
+            json=snapshot_payload(race, "2026-08-30T04:55:00Z"),
+        )
+        assert created.status_code == 201
+        snapshot = created.json()
+        assert "source_updated_at" in snapshot
+        assert snapshot["source_updated_at"] is None
+        jra_payload = snapshot_payload(race, "2026-08-30T04:56:00Z")
+        jra_payload["source"] = "jra_web"
+        jra_created = client.post(
+            f"/api/races/{race_id}/odds-snapshots",
+            json=jra_payload,
+        )
+        assert jra_created.status_code == 201
+        jra_snapshot = jra_created.json()
+
+        with sqlite3.connect(database_path) as connection:
+            observation_sql = """
+                INSERT INTO jra_odds_observations
+                (snapshot_id,source_url,source_race_id,received_at,source_updated_at,
+                 parser_version,response_sha256,validation_status)
+                VALUES (?,?,?,?,?,?,?,?)
+            """
+            connection.executemany(
+                observation_sql,
+                [
+                    (
+                        snapshot["id"], "https://example.test/race/fixture/odds", "fixture-race",
+                        "2026-08-30T05:00:00Z", "2026-08-30T04:52:00Z",
+                        "fixture-1", "0" * 64, "valid",
+                    ),
+                    (
+                        jra_snapshot["id"], "https://example.test/race/fixture/odds", "fixture-race",
+                        "2026-08-30T05:01:00Z", "2026-08-30T04:53:00Z",
+                        "fixture-1", "1" * 64, "valid",
+                    ),
+                ],
+            )
+
+        listed = client.get(f"/api/races/{race_id}/odds-snapshots")
+
+    assert listed.status_code == 200
+    assert len(listed.json()) == 2
+    assert listed.json()[0]["source"] == "user_csv"
+    assert listed.json()[0]["source_updated_at"] is None
+    assert listed.json()[1]["source"] == "jra_web"
+    assert listed.json()[1]["source_updated_at"] == "2026-08-30T04:53:00Z"
+
+
+def test_snapshot_history_preserves_malformed_legacy_odds_text(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy-odds.sqlite3"
+    app = create_app(database_path, now_provider=lambda: datetime(2026, 8, 30, 5, 0, tzinfo=timezone.utc))
+
+    with TestClient(app) as client:
+        race = import_race(client)
+        created = client.post(
+            f"/api/races/{race['race_id']}/odds-snapshots",
+            json=snapshot_payload(race, "2026-08-30T04:55:00Z"),
+        )
+        assert created.status_code == 201
+        snapshot_id = created.json()["id"]
+
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "UPDATE odds_snapshot_runners SET win_odds = ? WHERE snapshot_id = ? AND horse_number = ?",
+                ("legacy odds value", snapshot_id, 1),
+            )
+
+        listed = client.get(f"/api/races/{race['race_id']}/odds-snapshots")
+
+    assert listed.status_code == 200
+    runner = next(item for item in listed.json()[0]["runners"] if item["horse_number"] == 1)
+    assert runner["win_odds"] == "legacy odds value"
 
 def test_user_can_save_multiple_odds_snapshots_with_observed_and_received_times(tmp_path: Path) -> None:
     clock = MutableClock(datetime(2026, 8, 30, 5, 0, tzinfo=timezone.utc))

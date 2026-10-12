@@ -1556,7 +1556,14 @@ class SqliteDatabase:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             snapshot = connection.execute(
-                "SELECT * FROM odds_snapshots WHERE id = ?", (snapshot_id,)
+                """
+                SELECT snapshots.*, observations.source_updated_at AS source_updated_at
+                FROM odds_snapshots AS snapshots
+                LEFT JOIN jra_odds_observations AS observations
+                  ON observations.snapshot_id = snapshots.id AND snapshots.source = 'jra_web'
+                WHERE snapshots.id = ?
+                """,
+                (snapshot_id,),
             ).fetchone()
             if snapshot is None:
                 return None
@@ -1573,7 +1580,13 @@ class SqliteDatabase:
         with sqlite3.connect(self._path) as connection:
             connection.row_factory = sqlite3.Row
             snapshots = connection.execute(
-                "SELECT * FROM odds_snapshots WHERE race_id = ? ORDER BY id",
+                """
+                SELECT snapshots.*, observations.source_updated_at AS source_updated_at
+                FROM odds_snapshots AS snapshots
+                LEFT JOIN jra_odds_observations AS observations
+                  ON observations.snapshot_id = snapshots.id AND snapshots.source = 'jra_web'
+                WHERE snapshots.race_id = ? ORDER BY snapshots.id
+                """,
                 (race_id,),
             ).fetchall()
             return [
