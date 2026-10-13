@@ -372,6 +372,32 @@ th { color: #8f9b94; font-weight: 500; }
 .detail-next-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .detail-next-actions button { padding: 7px 10px; font-size: .74rem; }
 .decision-runner.is-selected-horse { outline: 2px solid #f6d788; outline-offset: -2px; }
+.personal-records { padding: 24px 28px; border-top: 1px solid rgba(220, 204, 170, .16); }
+.personal-records-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.personal-records-heading h3 { margin: 0; font: 500 1.25rem Georgia, "Yu Mincho", serif; }
+.personal-records-heading p { margin: 7px 0 0; color: #aeb9b2; font-size: .78rem; }
+.personal-records-heading > strong { color: #c6a766; font-size: .78rem; }
+.personal-runner-list { display: grid; gap: 14px; margin-top: 16px; }
+.personal-runner-record { min-width: 0; padding: 16px; border: 1px solid rgba(220, 204, 170, .16); background: rgba(12, 18, 15, .48); }
+.personal-runner-record h4 { margin: 0 0 14px; color: #f0e7d4; font-size: 1rem; }
+.personal-opinion-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.personal-opinion-form label, .personal-reflections label { display: grid; gap: 6px; color: #d6d0c2; font-size: .78rem; }
+.personal-opinion-form select, .personal-opinion-form textarea, .personal-reflections textarea {
+  width: 100%; min-width: 0; padding: 8px; border: 1px solid rgba(220, 204, 170, .25);
+  border-radius: 6px; color: #f4f0e8; background: #111815; font: inherit;
+}
+.personal-opinion-form textarea, .personal-reflections textarea { min-height: 76px; resize: vertical; }
+.personal-character-count { grid-column: 1 / -1; margin: -5px 0 0; color: #9da9a1; font-size: .7rem; text-align: right; }
+.personal-record-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.personal-record-actions button, .personal-reflections button { padding: 8px 12px; font-size: .76rem; }
+.personal-record-history, .personal-reflections { margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(220, 204, 170, .1); }
+.personal-record-history h5, .personal-reflections h5 { margin: 0 0 8px; color: #c6a766; font-size: .8rem; }
+.personal-record-history ol, .personal-reflections ol { display: grid; gap: 9px; margin: 0; padding-left: 22px; }
+.personal-record-history li, .personal-reflections li { min-width: 0; padding: 8px 10px; background: rgba(255, 255, 255, .025); overflow-wrap: anywhere; }
+.personal-record-history li p, .personal-reflections li p, .personal-record-history > p, .personal-reflections > p {
+  margin: 5px 0 0; color: #b9c3bd; font-size: .76rem; overflow-wrap: anywhere;
+}
+.personal-record-feedback { margin: 10px 0 0; color: #d8c17f; font-size: .78rem; }
 .selected-horse-badge { border-radius: 999px; padding: 4px 8px; color: #111815 !important; background: #f6d788; white-space: nowrap; }
 .past-attention-header > p { margin: 0; padding: 18px 28px; color: #aeb8b2; font-size: .82rem; }
 .past-scope-filters, .past-timing-filters, .past-result-filters {
@@ -601,6 +627,11 @@ footer {
   .meeting-week-races li > span:not(.race-state) { grid-column: 1; }
   .race-state { grid-column: 2; grid-row: 1 / span 2; }
   .weekly-list-heading, .weekly-detail-header { align-items: flex-start; flex-direction: column; padding: 20px; }
+  .personal-records { padding: 18px 14px; }
+  .personal-runner-record { padding: 12px; }
+  .personal-opinion-form { grid-template-columns: minmax(0, 1fr); }
+  .personal-character-count, .personal-record-actions { grid-column: 1; }
+  .personal-record-actions button, .personal-reflections button { width: 100%; }
   .date-tabs, .course-tabs, .race-filters { padding-right: 20px; padding-left: 20px; }
   .weekly-race-list li > button { grid-template-columns: 2.3rem minmax(0, 1fr) auto; gap: 2px; padding: 12px 3px; font-size: .75rem; }
   .weekly-race-list .race-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

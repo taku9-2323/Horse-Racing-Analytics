@@ -13,7 +13,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.database import RaceImportConflictError, SqliteDatabase
 from app.data_maintenance import (
-    BackupNotFoundError, BackupSummary, DataMaintenance, InvalidBackupError,
+    BackupNotFoundError, BackupSummary, DataMaintenance, InvalidBackupError, RestoreFailureError,
     RestoreSummary,
 )
 from app.bets import (
@@ -55,6 +55,11 @@ from app.meeting_week_acquisition import (
 from app.weekly_race_view import WeeklyRaceDecisionView, weekly_race_decision_view
 from app.past_attention import PastAttentionPage, past_attention_page
 from app.bulk_results import BulkResultAcquisitionService, BulkResultRun, bulk_result_response
+from app.personal_records import (
+    OpinionRevision, OpinionRevisionCreate, PersonalOpinionEmptyError,
+    PersonalOperationConflictError, PersonalRecordNotFoundError, PersonalRecordStore, PersonalRaceRecords,
+    Reflection, ReflectionCreate, ReflectionResultNotSavedError,
+)
 
 
 class ComponentHealth(BaseModel):
@@ -128,6 +133,9 @@ def create_app(
             current_time().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
     data_maintenance = DataMaintenance(resolved_database_path, current_time)
+    personal_records = PersonalRecordStore(
+        resolved_database_path, lambda: utc_iso(current_time()),
+    )
     if jra_fetcher is not None:
         fetcher = jra_fetcher
     else:
@@ -402,6 +410,71 @@ def create_app(
         if stored is None:
             raise HTTPException(status_code=404, detail="レースが見つかりません。")
         return build_analysis(race_id, *stored)
+
+    @app.get(
+        "/api/races/{race_id}/personal-runner-records",
+        response_model=PersonalRaceRecords,
+    )
+    def get_personal_runner_records(race_id: int) -> PersonalRaceRecords:
+        try:
+            return personal_records.get_race_records(race_id)
+        except PersonalRecordNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "race_not_found", "message": "レースが見つかりません。"},
+            ) from error
+
+    @app.post(
+        "/api/races/{race_id}/runners/{horse_number}/personal-opinion-revisions",
+        response_model=OpinionRevision,
+        status_code=201,
+    )
+    def append_personal_opinion(
+        race_id: int, horse_number: int, request: OpinionRevisionCreate,
+    ) -> OpinionRevision:
+        try:
+            return personal_records.append_opinion(race_id, horse_number, request)
+        except PersonalRecordNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "runner_not_found", "message": "対象の出走馬が見つかりません。"},
+            ) from error
+        except PersonalOpinionEmptyError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "personal_opinion_empty", "message": "初回は印、メモ、見送り理由のいずれかを入力してください。"},
+            ) from error
+        except PersonalOperationConflictError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "personal_operation_conflict", "message": "同じ操作IDが異なる内容で使われています。記録を再読み込みしてください。"},
+            ) from error
+
+    @app.post(
+        "/api/races/{race_id}/runners/{horse_number}/personal-reflections",
+        response_model=Reflection,
+        status_code=201,
+    )
+    def append_personal_reflection(
+        race_id: int, horse_number: int, request: ReflectionCreate,
+    ) -> Reflection:
+        try:
+            return personal_records.append_reflection(race_id, horse_number, request)
+        except PersonalRecordNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "runner_not_found", "message": "対象の出走馬が見つかりません。"},
+            ) from error
+        except ReflectionResultNotSavedError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "result_not_saved", "message": "振り返りは結果保存後に記録できます。"},
+            ) from error
+        except PersonalOperationConflictError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "personal_operation_conflict", "message": "同じ操作IDが異なる内容で使われています。記録を再読み込みしてください。"},
+            ) from error
 
     @app.post("/api/races/{race_id}/odds-snapshots", response_model=OddsSnapshot, status_code=201)
     def create_snapshot(race_id: int, request: SnapshotCreate) -> OddsSnapshot:
@@ -870,10 +943,19 @@ def create_app(
                 status_code=422,
                 detail={"code": "backup_invalid", "message": "検証に失敗したバックアップは復元できません。"},
             ) from error
+        except RestoreFailureError as error:
+            if error.rollback_verified:
+                message = "復元に失敗しました。安全バックアップから復元し、現在データが保たれていることを確認しました。"
+            else:
+                message = "復元に失敗し、安全バックアップから現在データが戻ったことを確認できません。安全バックアップを保持しました。"
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "restore_failed", "message": message},
+            ) from error
         except (OSError, sqlite3.Error) as error:
             raise HTTPException(
                 status_code=500,
-                detail={"code": "restore_failed", "message": "復元できませんでした。現在データは変更されていません。"},
+                detail={"code": "restore_failed", "message": "復元に失敗しました。バックアップを保持しました。"},
             ) from error
 
     @app.get("/api/data/export")

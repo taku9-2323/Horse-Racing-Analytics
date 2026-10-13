@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import JstTimestamp from "./JstTimestamp";
 import BettingPanel from "./BettingPanel";
+import PersonalRunnerRecords from "./PersonalRunnerRecords";
 import RuleConditionList, { type RuleCondition } from "./RuleConditionList";
 
 export type DecisionRunner = {
@@ -75,6 +76,7 @@ function RaceDecisionDetailView({
 }: Props) {
   const [selectedHorseNumbers, setSelectedHorseNumbers] = useState<number[]>([]);
   const [comparisonOrder, setComparisonOrder] = useState<ComparisonOrder>("number");
+  const [personalRefreshVersion, setPersonalRefreshVersion] = useState(0);
   const comparisonSorter = comparisonOrder === "number" ? compareByNumber : compareByPopularity;
   const orderedForComparison = [...detail.runners].sort(comparisonSorter);
   const selectedRunners = orderedForComparison.filter((runner) => selectedHorseNumbers.includes(runner.horse_number));
@@ -176,8 +178,13 @@ function RaceDecisionDetailView({
           <div><dt>市場シェア</dt><dd>{percent(runner.normalized_win_market_share)}</dd></div></dl>
       </article>)}
     </div>
+    <PersonalRunnerRecords raceId={detail.race_id} refreshVersion={personalRefreshVersion}
+      runners={detail.runners.map((runner) => ({
+        horse_number: runner.horse_number, horse_name: runner.horse_name,
+      }))} />
     <aside className="attention-disclaimer">{detail.disclaimer}</aside>
-    <BettingPanel raceId={detail.race_id} runners={detail.runners.map((runner) => ({
+    <BettingPanel raceId={detail.race_id} onResultsSaved={() => setPersonalRefreshVersion((version) => version + 1)}
+      runners={detail.runners.map((runner) => ({
       horse_number: runner.horse_number, horse_name: runner.horse_name,
     }))} />
     <aside className="detail-next"><strong>履歴・メンテナンス</strong><p>判定履歴、訂正、バックアップを各管理画面で確認できます。</p>

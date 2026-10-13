@@ -2,13 +2,24 @@ from pathlib import Path
 from datetime import date, timedelta
 import sqlite3
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from app.analysis_tags import INITIAL_ANALYSIS_TAGS, build_tag_context, validate_tag_conditions
 from app.evaluation import PredictionEvaluationRow, PredictionRunEvaluation, SettlementEvaluationRow
 from app.race_analysis import win_market_baseline
 from app.rule_judgements import INITIAL_RULE, build_runner_judgements
+
+
+@contextmanager
+def _sqlite_transaction(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 class RaceImportConflictError(Exception):
@@ -23,7 +34,7 @@ class SqliteDatabase:
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self._path) as connection:
+        with _sqlite_transaction(self._path) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS application_metadata (
@@ -619,6 +630,50 @@ class SqliteDatabase:
                         f"ALTER TABLE acquisition_failures ADD COLUMN {definition}"
                     )
             connection.execute("UPDATE application_metadata SET value = '18' WHERE key = 'schema_version'")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS personal_runner_opinion_revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    race_id INTEGER NOT NULL,
+                    horse_number INTEGER NOT NULL CHECK (horse_number > 0),
+                    mark TEXT CHECK (mark IS NULL OR mark IN ('◎', '○', '▲', '△', '☆', '消')),
+                    memo TEXT,
+                    skip_reason TEXT,
+                    recorded_at TEXT NOT NULL,
+                    FOREIGN KEY (race_id, horse_number) REFERENCES runners(race_id, horse_number)
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS personal_opinions_by_runner
+                    ON personal_runner_opinion_revisions(race_id, horse_number, id)"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS personal_runner_reflections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    race_id INTEGER NOT NULL,
+                    horse_number INTEGER NOT NULL CHECK (horse_number > 0),
+                    reflection TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    FOREIGN KEY (race_id, horse_number) REFERENCES runners(race_id, horse_number)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS personal_operation_requests (
+                    operation_id TEXT NOT NULL PRIMARY KEY,
+                    operation_type TEXT NOT NULL CHECK (operation_type IN ('opinion', 'reflection')),
+                    race_id INTEGER NOT NULL,
+                    horse_number INTEGER NOT NULL CHECK (horse_number > 0),
+                    payload_sha256 TEXT NOT NULL,
+                    record_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (operation_type, record_id),
+                    FOREIGN KEY (race_id, horse_number) REFERENCES runners(race_id, horse_number)
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS personal_reflections_by_runner
+                    ON personal_runner_reflections(race_id, horse_number, id)"""
+            )
+            connection.execute("UPDATE application_metadata SET value = '19' WHERE key = 'schema_version'")
 
     def check(self) -> None:
         with sqlite3.connect(self._path) as connection:
@@ -626,7 +681,7 @@ class SqliteDatabase:
                 "SELECT value FROM application_metadata WHERE key = 'schema_version'"
             ).fetchone()
 
-        if row != ("18",):
+        if row != ("19",):
             raise RuntimeError("SQLite schema is not ready")
 
     def has_running_bulk_result(self) -> bool:
