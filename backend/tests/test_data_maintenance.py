@@ -1,10 +1,14 @@
 from datetime import datetime, timezone
+import hashlib
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
+import app.data_maintenance as data_maintenance_module
+from app.data_maintenance import DataMaintenance
 from app.main import create_app
 
 
@@ -138,18 +142,22 @@ def test_json_and_csv_exports_include_user_data_and_audit_history(tmp_path: Path
     assert json_export.headers["content-type"] == "application/json"
     assert "attachment;" in json_export.headers["content-disposition"]
     payload = json_export.json()
-    assert payload["schema_version"] == "18"
+    assert payload["schema_version"] == "19"
     assert payload["exported_at"] == "2026-08-28T12:34:56Z"
     assert payload["tables"]["races"][0]["id"] == race["race_id"]
     assert payload["tables"]["runners"][0]["horse_name"] == "アカツキ"
     assert payload["tables"]["analysis_tag_audit_events"][0]["reason"] == "出力監査"
-    assert {"meeting_week_runs", "meeting_week_races", "meeting_week_observations"} <= set(payload["tables"])
+    assert {"meeting_week_runs", "meeting_week_races", "meeting_week_observations",
+            "personal_runner_opinion_revisions", "personal_runner_reflections",
+            "personal_operation_requests"} <= set(payload["tables"])
 
     assert csv_export.status_code == 200
     assert csv_export.headers["content-type"] == "application/zip"
     assert "attachment;" in csv_export.headers["content-disposition"]
     with ZipFile(BytesIO(csv_export.content)) as archive:
-        assert {"races.csv", "runners.csv", "analysis_tag_audit_events.csv"} <= set(archive.namelist())
+        assert {"races.csv", "runners.csv", "analysis_tag_audit_events.csv",
+                "personal_runner_opinion_revisions.csv", "personal_runner_reflections.csv",
+                "personal_operation_requests.csv"} <= set(archive.namelist())
         races_csv = archive.read("races.csv").decode("utf-8")
         audit_csv = archive.read("analysis_tag_audit_events.csv").decode("utf-8")
     assert "東京" in races_csv
@@ -176,3 +184,34 @@ def test_corrupt_or_unknown_backup_is_never_restored(tmp_path: Path) -> None:
         assert rejected.json()["detail"]["code"] == "backup_invalid"
         assert unknown.status_code == 404
         assert client.get(f"/api/races/{race_id}").status_code == 200
+
+
+def test_restore_collision_preserves_preexisting_stage_marker_and_live_data(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    database_path = tmp_path / "data.sqlite3"
+    app = create_app(database_path)
+    with TestClient(app) as client:
+        client.post("/api/races/import", content=SAMPLE_CSV, headers={"Content-Type": "text/csv"})
+        backup = client.post("/api/data/backups").json()
+        source_path = tmp_path / "backups" / f"{backup['id']}.sqlite3"
+        source_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        live_digest = DataMaintenance._database_digest(database_path)
+
+        collision_hex = "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa"
+        marker_path = tmp_path / f".restore-stage-{collision_hex}.sqlite3"
+        marker_bytes = b"unrelated synthetic pre-existing stage-path data"
+        marker_path.write_bytes(marker_bytes)
+        marker_digest = hashlib.sha256(marker_bytes).hexdigest()
+        monkeypatch.setattr(data_maintenance_module, "uuid4", lambda: SimpleNamespace(hex=collision_hex))
+
+        response = client.post(f"/api/data/backups/{backup['id']}/restore")
+
+        assert response.status_code == 500
+        assert response.json()["detail"]["code"] == "restore_failed"
+        assert marker_path.read_bytes() == marker_bytes
+        assert hashlib.sha256(marker_path.read_bytes()).hexdigest() == marker_digest
+        assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_digest
+        assert DataMaintenance._database_digest(database_path) == live_digest
+        backup_ids = [item["id"] for item in client.get("/api/data/backups").json()]
+        assert backup_ids == [backup["id"]]

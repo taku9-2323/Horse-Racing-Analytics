@@ -18,14 +18,17 @@ type Ledger = {
   totals: Totals;
   by_decision_type: Record<"candidate" | "discretionary", Totals>;
 };
-type Props = { raceId: number; runners: Array<{ horse_number: number; horse_name: string }> };
+type Props = {
+  raceId: number; runners: Array<{ horse_number: number; horse_name: string }>;
+  onResultsSaved?: () => void;
+};
 
 const responseError = async (response: Response) => {
   const payload = (await response.json()) as { detail?: { message?: string } | string };
   return (typeof payload.detail === "object" ? payload.detail.message : payload.detail) ?? `HTTP ${response.status}`;
 };
 
-export default function BettingPanel({ raceId, runners }: Props) {
+export default function BettingPanel({ raceId, runners, onResultsSaved }: Props) {
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [horseNumber, setHorseNumber] = useState(runners[0]?.horse_number ?? 1);
   const [betType, setBetType] = useState<"win" | "place">("win");
@@ -127,6 +130,7 @@ export default function BettingPanel({ raceId, runners }: Props) {
         method: "POST", headers: { "Content-Type": "text/csv; charset=utf-8" }, body: resultFile,
       });
       if (!response.ok) throw new Error(await responseError(response));
+      onResultsSaved?.();
       if (correct) setCorrectionReason("");
       await refreshAfterSave(correct ? "元の結果を残し、訂正版で再精算しました。" : "公式結果を取り込み、購入を精算しました。");
     } catch (error) {
@@ -149,6 +153,7 @@ export default function BettingPanel({ raceId, runners }: Props) {
       const payload = (await response.json()) as {
         result: { version: number }; source: { parser_version: string }; changes: string[];
       };
+      onResultsSaved?.();
       await loadLedger();
       const correction = payload.changes.length ? "訂正版を反映し、" : "";
       setMessage(`JRA結果を取得し、${correction}結果 v${payload.result.version} で精算しました（${payload.source.parser_version}）。`);

@@ -21,6 +21,10 @@ function mockApi(extra?: (url: string) => Promise<Response> | undefined) {
     if (url === "/api/health") return Promise.resolve(json({ service: "test", status: "ok", api: { status: "ok" }, database: { status: "ok", engine: "sqlite" } }));
     if (url === "/api/races") return Promise.resolve(json([analysis(1), analysis(2)]));
     if (url === "/api/acquisition/jra/meeting-weeks/current") return Promise.resolve(json({}, 404));
+    if (url.endsWith("/personal-runner-records")) {
+      const raceId = Number(url.split("/")[3]);
+      return Promise.resolve(json({ race_id: raceId, result_saved: false, runners: [] }));
+    }
     if (url.includes("weekly-decision-view")) return Promise.resolve(json(detail));
     if (url === "/api/races/1") return Promise.resolve(json(analysis(1)));
     if (url === "/api/races/2") return Promise.resolve(json(analysis(2)));
